@@ -254,10 +254,11 @@ class ScraperAdapter {
         if (error.verificationUrl) {
           return {
             status: 'verification_required',
-            message: 'Verification required to access this content',
+            message: `Verification required for site: ${error.domain || 'unknown'}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId
+              sessionId: error.sessionId,
+              domain: error.domain
             }
           };
         }
@@ -314,10 +315,11 @@ class ScraperAdapter {
         if (error.verificationUrl) {
           return {
             status: 'verification_required',
-            message: 'Verification required to access this content',
+            message: `Verification required for site: ${error.domain || 'unknown'}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId
+              sessionId: error.sessionId,
+              domain: error.domain
             }
           };
         }
@@ -375,10 +377,11 @@ class ScraperAdapter {
         if (error.verificationUrl) {
           return {
             status: 'verification_required',
-            message: 'Verification required to access this content',
+            message: `Verification required for site: ${error.domain || 'unknown'}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId
+              sessionId: error.sessionId,
+              domain: error.domain
             }
           };
         }

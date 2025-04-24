@@ -130,8 +130,8 @@ class BrowserService {
       
       if (
         pageSource.includes('Verify you are human') || 
-        pageSource.includes('cloudflare') &&
-        pageSource.includes('challenge') ||
+        (pageSource.includes('cloudflare') &&
+        pageSource.includes('challenge')) ||
         pageSource.includes('captcha')
       ) {
         logger.warn('Cloudflare verification or CAPTCHA detected!');
@@ -149,7 +149,8 @@ class BrowserService {
           throw {
             message: 'Verification required',
             verificationUrl: `/verify?session=${verificationSession.sessionId}`,
-            sessionId: verificationSession.sessionId
+            sessionId: verificationSession.sessionId,
+            domain: domain
           };
         } else {
           logger.warn('No cookies found, will attempt manual verification');
@@ -162,7 +163,8 @@ class BrowserService {
           throw {
             message: 'Verification required',
             verificationUrl: `/verify?session=${verificationSession.sessionId}`,
-            sessionId: verificationSession.sessionId
+            sessionId: verificationSession.sessionId,
+            domain: domain
           };
         }
       }
@@ -369,20 +371,24 @@ class BrowserService {
       // Navigate to the URL
       await verifyDriver.get(url);
       
+      // Extract domain
+      const domain = this._extractDomain(url);
+      
       // Store session information
       this.activeSessions[sessionId] = {
         driver: verifyDriver,
         url: url,
-        domain: this._extractDomain(url),
+        domain: domain,
         startTime: Date.now(),
         expiresAt: Date.now() + (30 * 60 * 1000) // 30 minutes
       };
       
-      logger.info(`Created verification session ${sessionId} for URL: ${url}`);
+      logger.info(`Created verification session ${sessionId} for URL: ${url} (Domain: ${domain})`);
       
       return {
         sessionId,
-        url
+        url,
+        domain
       };
     } catch (error) {
       logger.error(`Error creating verification session: ${error.message}`);
@@ -457,7 +463,8 @@ class BrowserService {
       return {
         success: true,
         message: `Verification completed successfully for ${session.domain}`,
-        cookieCount: cookies.length
+        cookieCount: cookies.length,
+        domain: session.domain
       };
     } catch (error) {
       logger.error(`Error completing verification session: ${error.message}`);
