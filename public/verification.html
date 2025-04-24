@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare Verification</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+      color: #333;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 5px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      color: #2c3e50;
+      border-bottom: 2px solid #3498db;
+      padding-bottom: 10px;
+    }
+
+    .info-box {
+      background-color: #e8f4f8;
+      border-left: 4px solid #3498db;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+
+    .error-box {
+      background-color: #fae8e8;
+      border-left: 4px solid #e74c3c;
+      padding: 15px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    .success-box {
+      background-color: #e8f8e8;
+      border-left: 4px solid #2ecc71;
+      padding: 15px;
+      margin-bottom: 20px;
+      display: none;
+    }
+
+    button {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background-color 0.3s;
+    }
+
+    button:hover {
+      background-color: #2980b9;
+    }
+
+    button:disabled {
+      background-color: #95a5a6;
+      cursor: not-allowed;
+    }
+
+    .steps {
+      margin-top: 20px;
+    }
+
+    .steps h3 {
+      margin-bottom: 10px;
+    }
+
+    .steps ol {
+      padding-left: 20px;
+    }
+
+    .steps li {
+      margin-bottom: 10px;
+    }
+
+    .session-info {
+      margin-top: 20px;
+    }
+
+    .session-info dl {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 10px;
+    }
+
+    .session-info dt {
+      font-weight: bold;
+    }
+
+    .session-info dd {
+      margin-left: 0;
+    }
+
+    .timer {
+      font-size: 18px;
+      font-weight: bold;
+      color: #e74c3c;
+      margin-top: 15px;
+    }
+
+    .controls {
+      margin-top: 20px;
+      display: flex;
+      gap: 10px;
+    }
+
+    #remote-frame {
+      width: 100%;
+      height: 500px;
+      border: 1px solid #ccc;
+      margin-top: 20px;
+    }
+
+    @media (max-width: 600px) {
+      .session-info dl {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Cloudflare Verification</h1>
+    
+    <div class="info-box">
+      <p>A Cloudflare verification challenge has been detected. This browser window will help you solve the verification so our scraper can access the content.</p>
+      <p>The verification will be completed in a separate browser window that will automatically open on the server. This page will guide you through the process.</p>
+    </div>
+    
+    <div id="error-message" class="error-box">
+      <p>Error: <span id="error-text"></span></p>
+    </div>
+    
+    <div id="success-message" class="success-box">
+      <p>Success! The verification has been completed and cookies have been saved. You can now close this window and continue your scraping task.</p>
+    </div>
+
+    <div class="steps">
+      <h3>Follow these steps:</h3>
+      <ol>
+        <li>Wait for the verification session to be ready (this may take a few seconds)</li>
+        <li>A browser window has opened on the server with the verification challenge</li>
+        <li>Complete the CAPTCHA or verification challenge in that window</li>
+        <li>After successfully passing the verification, click the "Complete Verification" button below</li>
+        <li>Wait for confirmation that the cookies have been saved</li>
+      </ol>
+    </div>
+    
+    <div class="session-info">
+      <h3>Session Information:</h3>
+      <dl>
+        <dt>Session ID:</dt>
+        <dd id="session-id">Loading...</dd>
+        
+        <dt>URL:</dt>
+        <dd id="session-url">Loading...</dd>
+        
+        <dt>Domain:</dt>
+        <dd id="session-domain">Loading...</dd>
+        
+        <dt>Status:</dt>
+        <dd id="session-status">Loading...</dd>
+      </dl>
+      
+      <div class="timer">
+        Time remaining: <span id="time-remaining">--:--</span>
+      </div>
+    </div>
+    
+    <div class="controls">
+      <button id="complete-btn" disabled>Complete Verification</button>
+      <button id="cancel-btn" disabled>Cancel Verification</button>
+      <button id="refresh-btn" disabled>Refresh Status</button>
+    </div>
+  </div>
+
+  <script>
+    // Get session ID from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionId = urlParams.get('session');
+    
+    // Elements
+    const sessionIdElem = document.getElementById('session-id');
+    const sessionUrlElem = document.getElementById('session-url');
+    const sessionDomainElem = document.getElementById('session-domain');
+    const sessionStatusElem = document.getElementById('session-status');
+    const timeRemainingElem = document.getElementById('time-remaining');
+    const completeBtn = document.getElementById('complete-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const errorBox = document.getElementById('error-message');
+    const errorText = document.getElementById('error-text');
+    const successBox = document.getElementById('success-message');
+    
+    // Initialize
+    if (sessionId) {
+      sessionIdElem.textContent = sessionId;
+      getSessionStatus();
+      
+      // Enable buttons
+      refreshBtn.disabled = false;
+      cancelBtn.disabled = false;
+      
+      // Set up refresh interval
+      const statusInterval = setInterval(() => {
+        getSessionStatus();
+      }, 10000); // Refresh every 10 seconds
+      
+      // Event listeners
+      completeBtn.addEventListener('click', completeVerification);
+      cancelBtn.addEventListener('click', cancelVerification);
+      refreshBtn.addEventListener('click', getSessionStatus);
+    } else {
+      showError('No session ID provided. Please start a new verification.');
+      sessionIdElem.textContent = 'Not available';
+    }
+    
+    // Functions
+    async function getSessionStatus() {
+      try {
+        const response = await fetch(`/api/verify/${sessionId}`);
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+          const sessionInfo = data.data;
+          
+          sessionUrlElem.textContent = sessionInfo.url;
+          sessionDomainElem.textContent = sessionInfo.domain;
+          sessionStatusElem.textContent = 'Active';
+          
+          // Format remaining time
+          const minutes = Math.floor(sessionInfo.remainingMinutes);
+          const seconds = Math.floor((sessionInfo.remainingMinutes % 1) * 60);
+          timeRemainingElem.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+          
+          // Enable complete button
+          completeBtn.disabled = false;
+        } else {
+          showError(data.message);
+        }
+      } catch (error) {
+        showError(`Failed to get session status: ${error.message}`);
+      }
+    }
+    
+    async function completeVerification() {
+      try {
+        completeBtn.disabled = true;
+        completeBtn.textContent = 'Processing...';
+        
+        const response = await fetch(`/api/verify/${sessionId}/complete`, {
+          method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+          // Show success message
+          successBox.style.display = 'block';
+          errorBox.style.display = 'none';
+          
+          // Update status
+          sessionStatusElem.textContent = 'Completed';
+          
+          // Disable buttons
+          completeBtn.disabled = true;
+          cancelBtn.disabled = true;
+        } else {
+          showError(data.message);
+          completeBtn.disabled = false;
+          completeBtn.textContent = 'Complete Verification';
+        }
+      } catch (error) {
+        showError(`Failed to complete verification: ${error.message}`);
+        completeBtn.disabled = false;
+        completeBtn.textContent = 'Complete Verification';
+      }
+    }
+    
+    async function cancelVerification() {
+      if (!confirm('Are you sure you want to cancel this verification session?')) {
+        return;
+      }
+      
+      try {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling...';
+        
+        const response = await fetch(`/api/verify/${sessionId}`, {
+          method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+          // Show success message
+          errorBox.style.display = 'block';
+          errorText.textContent = 'Verification cancelled successfully';
+          
+          // Update status
+          sessionStatusElem.textContent = 'Cancelled';
+          
+          // Disable buttons
+          completeBtn.disabled = true;
+          cancelBtn.disabled = true;
+          refreshBtn.disabled = true;
+        } else {
+          showError(data.message);
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = 'Cancel Verification';
+        }
+      } catch (error) {
+        showError(`Failed to cancel verification: ${error.message}`);
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = 'Cancel Verification';
+      }
+    }
+    
+    function showError(message) {
+      errorBox.style.display = 'block';
+      errorText.textContent = message;
+      
+      // Hide success message if showing
+      successBox.style.display = 'none';
+    }
+  </script>
+</body>
+</html>

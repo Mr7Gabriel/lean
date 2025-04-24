@@ -11,6 +11,7 @@ const mangaRoutes = require('./routes/manga.routes');
 const chapterRoutes = require('./routes/chapter.routes');
 const userRoutes = require('./routes/user.routes');
 const scraperRoutes = require('./routes/scraper.routes');
+const verificationRoutes = require('./routes/verification.routes');
 
 // Initialize express app
 const app = express();
@@ -26,6 +27,9 @@ app.use('/api', mangaRoutes);
 app.use('/api', chapterRoutes);
 app.use('/api', userRoutes);
 app.use('/api/scraper', scraperRoutes);
+app.use('/api/verify', verificationRoutes);
+// Serve static files
+
 
 // Root route
 app.get('/', (req, res) => {
@@ -35,6 +39,17 @@ app.get('/', (req, res) => {
 // Health check
 app.get('/api/healthcheck', (req, res) => {
   res.json({ status: 'ok', version: '1.0.0' });
+});
+// Verification routes
+app.get('/verify', (req, res) => {
+  const sessionId = req.query.session;
+  
+  if (!sessionId) {
+    return res.status(400).send('Session ID is required');
+  }
+  
+  // Serve the verification page with the session ID
+  res.sendFile(path.join(__dirname, 'public', 'verification.html'));
 });
 
 // Error handling middleware
