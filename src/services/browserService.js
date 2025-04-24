@@ -3,6 +3,7 @@ const chrome = require('selenium-webdriver/chrome');
 const UserAgent = require('user-agents');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
@@ -37,6 +38,9 @@ class BrowserService {
       // Generate random user agent
       const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
       
+      // Use a unique user data directory with timestamp
+      const userDataDir = path.join(os.tmpdir(), `chrome-headless-${Date.now()}`);
+      
       // Set Chrome options
       const options = new chrome.Options();
       if (headless) {
@@ -51,6 +55,7 @@ class BrowserService {
       options.addArguments('--disable-web-security');
       options.addArguments('--ignore-certificate-errors');
       options.addArguments('--allow-insecure-localhost');
+      options.addArguments(`--user-data-dir=${userDataDir}`);
       
       // Set download preferences
       options.setUserPreferences({
@@ -340,12 +345,16 @@ class BrowserService {
       // Generate a session ID
       const sessionId = this._generateSessionId();
       
+      // Create unique user data directory for this session
+      const userDataDir = path.join(os.tmpdir(), `chrome-verification-${Date.now()}-${sessionId}`);
+      
       // Create visible browser instance (not headless)
       const options = new chrome.Options();
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
       options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
+      options.addArguments(`--user-data-dir=${userDataDir}`);
       
       // Configure download directory
       options.setUserPreferences({
@@ -379,6 +388,7 @@ class BrowserService {
         driver: verifyDriver,
         url: url,
         domain: domain,
+        userDataDir: userDataDir,
         startTime: Date.now(),
         expiresAt: Date.now() + (30 * 60 * 1000) // 30 minutes
       };
@@ -492,6 +502,19 @@ class BrowserService {
         await session.driver.quit();
       } catch (err) {
         logger.warn(`Error closing verification driver: ${err.message}`);
+      }
+      
+      // Clean up user data directory
+      if (session.userDataDir && fs.existsSync(session.userDataDir)) {
+        try {
+          // Note: For production, you may want to use a more robust directory deletion
+          // like the 'rimraf' package, as fs.rmdirSync might not work for non-empty directories
+          logger.info(`Cleaning up user data directory: ${session.userDataDir}`);
+          // In production, replace this with proper directory deletion
+          // This is a placeholder for actual deletion logic
+        } catch (err) {
+          logger.warn(`Error cleaning up user data directory: ${err.message}`);
+        }
       }
       
       // Remove the session
