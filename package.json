@@ -1,0 +1,35 @@
+{
+    "name": "manga-mirror-api",
+    "version": "1.0.0",
+    "description": "Backend API for manga mirroring and management, integrated with WordPress",
+    "main": "src/server.js",
+    "scripts": {
+      "start": "node src/server.js",
+      "dev": "nodemon src/server.js",
+      "init-db": "node src/db/init-db.js",
+      "test": "jest"
+    },
+    "dependencies": {
+      "axios": "^1.6.2",
+      "bcrypt": "^5.1.1",
+      "cheerio": "^1.0.0-rc.12",
+      "cloudflare-scraper": "^2.0.0",
+      "cors": "^2.8.5",
+      "dotenv": "^16.3.1",
+      "express": "^4.18.2",
+      "express-validator": "^7.0.1",
+      "form-data": "^4.0.0",
+      "jsonwebtoken": "^9.0.2",
+      "multer": "^1.4.5-lts.1",
+      "sequelize": "^6.35.1",
+      "selenium-webdriver": "^4.16.0",
+      "sqlite3": "^5.1.6",
+      "user-agents": "^1.1.17",
+      "winston": "^3.11.0"
+    },
+    "devDependencies": {
+      "jest": "^29.7.0",
+      "nodemon": "^3.0.2",
+      "supertest": "^6.3.3"
+    }
+  }

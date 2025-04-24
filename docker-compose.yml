@@ -1,0 +1,25 @@
+version: '3'
+
+services:
+  manga-api:
+    build: .
+    container_name: manga-mirror-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./downloads:/app/downloads
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - WP_BASE_URL=${WP_BASE_URL}
+      - WP_API_ENDPOINT=${WP_API_ENDPOINT}
+      - WP_API_USERNAME=${WP_API_USERNAME}
+      - WP_API_PASSWORD=${WP_API_PASSWORD}
+      - CDN_BASE_URL=${CDN_BASE_URL}
+      - CDN_API_ENDPOINT=${CDN_API_ENDPOINT}
+      - CDN_PUBLIC_URL=${CDN_PUBLIC_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+    restart: unless-stopped
