@@ -148,7 +148,7 @@ class BrowserService {
           const verificationSession = await this.launchVerificationSession(url);
           throw {
             message: 'Verification required',
-            verificationUrl: `/api/verify/${verificationSession.sessionId}`,
+            verificationUrl: `/verify?session=${verificationSession.sessionId}`,
             sessionId: verificationSession.sessionId
           };
         } else {
@@ -161,7 +161,7 @@ class BrowserService {
           const verificationSession = await this.launchVerificationSession(url);
           throw {
             message: 'Verification required',
-            verificationUrl: `/api/verify/${verificationSession.sessionId}`,
+            verificationUrl: `/verify?session=${verificationSession.sessionId}`,
             sessionId: verificationSession.sessionId
           };
         }

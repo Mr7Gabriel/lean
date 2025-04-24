@@ -231,7 +231,7 @@ class ScraperAdapter {
   }
 
   /**
-   * Scrape manga details from URL
+   * Scrape manga details from URL with Cloudflare verification handling
    * @param {string} url - URL of manga page
    * @returns {Promise<object>} Response object with status, message, and data
    */
@@ -246,7 +246,24 @@ class ScraperAdapter {
         };
       }
       
-      const mangaData = await scraper.scrape(url);
+      let mangaData;
+      try {
+        mangaData = await scraper.scrape(url);
+      } catch (error) {
+        // Check if this is a verification required error
+        if (error.verificationUrl) {
+          return {
+            status: 'verification_required',
+            message: 'Verification required to access this content',
+            data: {
+              verificationUrl: error.verificationUrl,
+              sessionId: error.sessionId
+            }
+          };
+        }
+        throw error;
+      }
+      
       if (!mangaData) {
         return {
           status: 'error',
@@ -289,7 +306,24 @@ class ScraperAdapter {
         };
       }
       
-      const chapterData = await scraper.scrapeChapter(url);
+      let chapterData;
+      try {
+        chapterData = await scraper.scrapeChapter(url);
+      } catch (error) {
+        // Check if this is a verification required error
+        if (error.verificationUrl) {
+          return {
+            status: 'verification_required',
+            message: 'Verification required to access this content',
+            data: {
+              verificationUrl: error.verificationUrl,
+              sessionId: error.sessionId
+            }
+          };
+        }
+        throw error;
+      }
+      
       if (!chapterData) {
         return {
           status: 'error',
@@ -333,7 +367,24 @@ class ScraperAdapter {
         };
       }
       
-      const coverPath = await scraper.downloadCover(url, mangaTitle);
+      let coverPath;
+      try {
+        coverPath = await scraper.downloadCover(url, mangaTitle);
+      } catch (error) {
+        // Check if this is a verification required error
+        if (error.verificationUrl) {
+          return {
+            status: 'verification_required',
+            message: 'Verification required to access this content',
+            data: {
+              verificationUrl: error.verificationUrl,
+              sessionId: error.sessionId
+            }
+          };
+        }
+        throw error;
+      }
+      
       if (!coverPath) {
         return {
           status: 'error',
