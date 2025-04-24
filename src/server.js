@@ -1,9 +1,11 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const { sequelize } = require('./db/models');
 const config = require('./config');
 const logger = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
+const browserService = require('./services/browserService');
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -21,6 +23,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, '../public')));
+
 // API Routes
 app.use('/api', authRoutes);
 app.use('/api', mangaRoutes);
@@ -28,8 +33,11 @@ app.use('/api', chapterRoutes);
 app.use('/api', userRoutes);
 app.use('/api/scraper', scraperRoutes);
 app.use('/api/verify', verificationRoutes);
-// Serve static files
 
+// Route for verification page
+app.get('/verify', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/verification.html'));
+});
 
 // Root route
 app.get('/', (req, res) => {
@@ -40,20 +48,21 @@ app.get('/', (req, res) => {
 app.get('/api/healthcheck', (req, res) => {
   res.json({ status: 'ok', version: '1.0.0' });
 });
-// Verification routes
-app.get('/verify', (req, res) => {
-  const sessionId = req.query.session;
-  
-  if (!sessionId) {
-    return res.status(400).send('Session ID is required');
-  }
-  
-  // Serve the verification page with the session ID
-  res.sendFile(path.join(__dirname, 'public', 'verification.html'));
-});
 
 // Error handling middleware
 app.use(errorHandler);
+
+// Add cleanup job for expired verification sessions
+setInterval(async () => {
+  try {
+    const cleanedCount = await browserService.cleanupExpiredSessions();
+    if (cleanedCount > 0) {
+      logger.info(`Cleaned up ${cleanedCount} expired verification sessions`);
+    }
+  } catch (error) {
+    logger.error(`Error in cleanup job: ${error.message}`);
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
 
 // Start server
 const PORT = config.port || 8000;
@@ -67,4 +76,4 @@ sequelize.sync().then(() => {
   logger.error(`Database connection error: ${err.message}`);
 });
 
-module.exports = app; // For testing
+module.exports = app; 
