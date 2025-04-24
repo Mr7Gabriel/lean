@@ -18,6 +18,12 @@ class ShinigamiScraper extends BaseScraper {
     if (!fs.existsSync(this.downloadDir)) {
       fs.mkdirSync(this.downloadDir, { recursive: true });
     }
+    
+    // Initialize axios-based scraper
+    this.scraper = axios.create({
+      timeout: 10000,
+      headers: this._getRandomHeaders()
+    });
   }
 
   /**
@@ -58,56 +64,75 @@ class ShinigamiScraper extends BaseScraper {
       // Shinigami.site likely needs Selenium because of heavy JS and anti-bot
       const html = await browserService.getPage(url);
       
-      // Execute JavaScript in the browser to extract data
-      const data = await browserService.executeScript(`
-        const extractText = (selector) => {
-          const element = document.querySelector(selector);
-          return element ? element.textContent.trim() : '';
-        };
-
-        const extractImage = (selector) => {
-          const element = document.querySelector(selector);
-          return element ? element.src : '';
-        };
-
-        const extractMultipleElements = (text, type='button') => {
-          // Find all elements that match the text using a more flexible approach
-          const elements = Array.from(document.querySelectorAll(type))
-            .filter(el => el.textContent.trim().includes(text));
-          return elements.map(el => el.textContent.trim());
-        };
-
-        return {
-          title: extractText('h1.text-base-white.font-semibold'),
-          alternativeTitles: extractText('h3.text-base-white.font-medium'),
-          coverImage: extractImage('div.w-180 img'),
-          description: extractText('p'),
-          status: extractText('h3.text-base-white.font-medium'),
-          type: extractText('button.border-2'),
-          author: extractMultipleElements('Author'),
-          artist: extractMultipleElements('Artist'),
-          genres: extractMultipleElements('Genre'),
-          score: extractText('span.text-16.leading-22.font-medium.text-base-white')
-        };
-      `, url);
+      // Parse HTML with Cheerio instead of executeScript
+      const $ = cheerio.load(html);
       
-      // Process the data
-      if (data.author && Array.isArray(data.author)) {
-        data.author = data.author.join(', ');
-      }
+      // Initialize data object
+      const data = {
+        title: '',
+        alternativeTitles: '',
+        coverImage: '',
+        description: '',
+        status: '',
+        type: '',
+        releaseDate: '',
+        author: '',
+        artist: '',
+        genres: '',
+        score: ''
+      };
       
-      if (data.artist && Array.isArray(data.artist)) {
-        data.artist = data.artist.join(', ');
-      }
+      // Extract title
+      const titleElem = $('h1.text-base-white.font-semibold');
+      data.title = titleElem.length ? titleElem.text().trim() : '';
       
-      if (data.genres && Array.isArray(data.genres)) {
-        data.genres = data.genres.join(', ');
-      }
+      // Extract alternative titles
+      const altTitleElem = $('h3.text-base-white.font-medium');
+      data.alternativeTitles = altTitleElem.length ? altTitleElem.text().trim() : '';
       
-      // Add empty releaseDate if not present
-      if (!data.releaseDate) {
-        data.releaseDate = '';
-      }
+      // Extract cover image
+      const coverElem = $('div.w-180 img');
+      data.coverImage = coverElem.length ? coverElem.attr('src') : '';
+      
+      // Extract description
+      const descElem = $('p');
+      data.description = descElem.length ? descElem.text().trim() : '';
+      
+      // Extract status - might be in the second h3 element
+      const statusElem = $('h3.text-base-white.font-medium').eq(1);
+      data.status = statusElem.length ? statusElem.text().trim() : '';
+      
+      // Extract type
+      const typeElem = $('button.border-2');
+      data.type = typeElem.length ? typeElem.text().trim() : '';
+      
+      // Extract authors
+      const authorElems = $('button:contains("Author")');
+      const authors = [];
+      authorElems.each((i, elem) => {
+        authors.push($(elem).text().trim());
+      });
+      data.author = authors.join(', ');
+      
+      // Extract artists
+      const artistElems = $('button:contains("Artist")');
+      const artists = [];
+      artistElems.each((i, elem) => {
+        artists.push($(elem).text().trim());
+      });
+      data.artist = artists.join(', ');
+      
+      // Extract genres
+      const genreElems = $('button:contains("Genre")');
+      const genres = [];
+      genreElems.each((i, elem) => {
+        genres.push($(elem).text().trim());
+      });
+      data.genres = genres.join(', ');
+      
+      // Extract score
+      const scoreElem = $('span.text-16.leading-22.font-medium.text-base-white');
+      data.score = scoreElem.length ? scoreElem.text().trim() : '';
       
       return data;
     } catch (error) {
