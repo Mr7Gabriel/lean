@@ -3,7 +3,6 @@ const chrome = require('selenium-webdriver/chrome');
 const UserAgent = require('user-agents');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
@@ -14,7 +13,6 @@ class BrowserService {
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
     this.activeSessions = {};
-    this.userDataDirs = new Set(); // Track active user data directories
     
     // Create necessary directories
     if (!fs.existsSync(this.downloadPath)) {
@@ -24,23 +22,6 @@ class BrowserService {
     if (!fs.existsSync(this.cookiesPath)) {
       fs.mkdirSync(this.cookiesPath, { recursive: true });
     }
-  }
-
-  /**
-   * Generate a truly unique directory name
-   * @param {string} prefix - Prefix for directory name
-   * @returns {string} - Unique directory path
-   * @private
-   */
-  _generateUniqueDir(prefix) {
-    // Use timestamp + random bytes to ensure uniqueness
-    const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
-    const dirPath = path.join(os.tmpdir(), `${prefix}-${uniqueId}`);
-    
-    // Add to tracked directories
-    this.userDataDirs.add(dirPath);
-    
-    return dirPath;
   }
 
   /**
@@ -59,9 +40,6 @@ class BrowserService {
       // Generate random user agent
       const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
       
-      // Use a unique user data directory
-      const userDataDir = this._generateUniqueDir('chrome-data');
-      
       // Set Chrome options
       const options = new chrome.Options();
       if (headless) {
@@ -76,9 +54,9 @@ class BrowserService {
       options.addArguments('--disable-web-security');
       options.addArguments('--ignore-certificate-errors');
       options.addArguments('--allow-insecure-localhost');
-      options.addArguments(`--user-data-dir=${userDataDir}`);
+      // Important: DO NOT set user-data-dir
       
-      // Set download preferences
+      // Set download preferences for headless Chrome
       options.setUserPreferences({
         'download.default_directory': this.downloadPath,
         'download.prompt_for_download': false,
@@ -99,10 +77,9 @@ class BrowserService {
         .setChromeService(service)
         .build();
       
-      // Store driver and its data directory
+      // Store driver
       this.drivers[instanceId] = {
-        driver: driver,
-        userDataDir: userDataDir
+        driver: driver
       };
       
       // Set timeouts
@@ -115,42 +92,11 @@ class BrowserService {
       logger.info(`Selenium WebDriver initialized successfully for instance ${instanceId}`);
       return driver;
     } catch (error) {
-      // Clean up directory if driver creation failed
-      const userDataDir = this.drivers[instanceId]?.userDataDir;
-      if (userDataDir) {
-        this.userDataDirs.delete(userDataDir);
-        try {
-          // We don't need to actually delete the directory, as Chrome's --user-data-dir
-          // flag will create and clean them up automatically. Just remove from our tracking.
-          logger.info(`Removing tracking for directory: ${userDataDir}`);
-        } catch (cleanupError) {
-          logger.warn(`Failed to cleanup directory: ${cleanupError.message}`);
-        }
-      }
-      
       // Remove failed driver entry
       delete this.drivers[instanceId];
       
       logger.error(`Error initializing WebDriver: ${error.message}`);
       throw error;
-    }
-  }
-
-  /**
-   * Clean up a directory safely
-   * @param {string} dirPath - Directory to clean up
-   * @returns {Promise<void>}
-   * @private
-   */
-  async _cleanupDirectory(dirPath) {
-    try {
-      if (dirPath && fs.existsSync(dirPath)) {
-        // Just log that we're "cleaning up" but don't actually try to delete
-        // because Chrome handles its own user profile directories
-        logger.info(`Marked directory for cleanup: ${dirPath}`);
-      }
-    } catch (error) {
-      logger.warn(`Error with directory ${dirPath}: ${error.message}`);
     }
   }
 
@@ -168,10 +114,6 @@ class BrowserService {
       } catch (error) {
         logger.error(`Error closing WebDriver ${instanceId}: ${error.message}`);
       } finally {
-        // Remove from tracking
-        if (driverInfo.userDataDir) {
-          this.userDataDirs.delete(driverInfo.userDataDir);
-        }
         delete this.drivers[instanceId];
       }
     }
@@ -428,16 +370,13 @@ class BrowserService {
       // Generate a session ID
       const sessionId = this._generateSessionId();
       
-      // Create unique user data directory for this session
-      const userDataDir = this._generateUniqueDir('chrome-verification');
-      
       // Create visible browser instance (not headless)
       const options = new chrome.Options();
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
       options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
-      options.addArguments(`--user-data-dir=${userDataDir}`);
+      // Important: DO NOT set user-data-dir
       
       // Configure download directory
       options.setUserPreferences({
@@ -477,7 +416,6 @@ class BrowserService {
         driver: verifyDriver,
         url: url,
         domain: domain,
-        userDataDir: userDataDir,
         startTime: Date.now(),
         expiresAt: Date.now() + (30 * 60 * 1000) // 30 minutes
       };
@@ -591,11 +529,6 @@ class BrowserService {
         await session.driver.quit();
       } catch (err) {
         logger.warn(`Error closing verification driver: ${err.message}`);
-      }
-      
-      // Remove userDataDir from tracking
-      if (session.userDataDir) {
-        this.userDataDirs.delete(session.userDataDir);
       }
       
       // Remove the session
