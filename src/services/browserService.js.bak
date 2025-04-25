@@ -1,18 +1,19 @@
+const { Builder, By, until } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
+const UserAgent = require('user-agents');
 const path = require('path');
 const fs = require('fs');
+const config = require('../config');
+const logger = require('../utils/logger');
 const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
-const undetected = require('undetected-chromedriver');
-const { By, until } = require('selenium-webdriver');
-const logger = require('../utils/logger');
-const config = require('../config');
 
 class BrowserService {
   constructor() {
     // Drivers storage
     this.drivers = {};
     
-    // Consistent User-Agent
+    // Set konstanta User-Agent untuk memastikan konsistensi
     this.stealthUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
     
     // Paths
@@ -329,7 +330,7 @@ class BrowserService {
   }
 
   /**
-   * Initialize undetected Chrome driver
+   * Initialize WebDriver
    * @param {string} instanceId - Unique driver instance ID
    * @param {boolean} headless - Run in headless mode
    * @returns {Promise<WebDriver>} Selenium WebDriver
@@ -341,31 +342,33 @@ class BrowserService {
     }
 
     try {
-      // Set up undetected chromedriver options
-      const options = new undetected.Options();
+      // Random user agent
+      const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
+      
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
       
       // Common Chrome arguments
       const commonArgs = [
         '--no-sandbox',
         '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        `--user-agent=${userAgent}`,
+        '--disable-extensions',
         '--disable-web-security',
         '--ignore-certificate-errors',
         '--allow-running-insecure-content',
-        '--window-size=1920,1080',
-        `--user-agent=${this.stealthUserAgent}`
+        '--disable-application-cache',
+        '--disable-infobars'
       ];
       
       options.addArguments(commonArgs);
-      
-      // Add headless mode if needed
-      if (headless) {
-        // Some versions of undetected-chromedriver support this
-        try {
-          options.headless();
-        } catch (e) {
-          options.addArguments('--headless=new');
-        }
-      }
       
       // Unique temp directory
       const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
@@ -380,15 +383,128 @@ class BrowserService {
         'safebrowsing.enabled': false
       });
       
-      // Custom Chrome binary path if provided
+      // Custom Chrome binary path
       if (config.selenium.chromeBinaryPath) {
         options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
       }
       
-      // Build undetected WebDriver
-      const driver = await undetected.Builder()
-        .setChromeOptions(options)
-        .build();
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
+      
+      // Store driver info
+      this.drivers[instanceId] = {
+        driver,
+        tempDir
+      };
+      
+      // Set timeouts
+      await driver.manage().setTimeouts({
+        implicit: 10000,
+        pageLoad: 30000,
+        script: 30000
+      });
+      
+      logger.info(`WebDriver initialized: ${instanceId}`);
+      return driver;
+    } catch (error) {
+      delete this.drivers[instanceId];
+      logger.error(`WebDriver init error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize a reinforced WebDriver that's more resistant to detection
+   * @param {string} instanceId - Unique driver instance ID
+   * @param {boolean} headless - Run in headless mode
+   * @returns {Promise<WebDriver>} Selenium WebDriver
+   */
+  async initReinforcedDriver(instanceId = 'default', headless = true) {
+    // Close existing driver if it exists
+    if (this.drivers[instanceId]) {
+      await this.closeDriver(instanceId);
+    }
+
+    try {
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
+      
+      // Argumen yang lebih kuat untuk menghindari deteksi
+      const stealthArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-site-isolation-trials',
+        '--disable-features=BlockInsecurePrivateNetworkRequests',
+        '--disable-web-security',
+        '--allow-running-insecure-content',
+        `--user-agent=${this.stealthUserAgent}`,
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-setuid-sandbox',
+        '--ignore-certificate-errors',
+        '--enable-features=NetworkServiceInProcess2',
+        '--disable-features=PrivacySandboxAdsAPIs',
+        '--window-size=1920,1080'
+      ];
+      
+      options.addArguments(stealthArgs);
+      
+      // Lebih banyak preferensi untuk menghindari deteksi
+      options.setUserPreferences({
+        'profile.default_content_setting_values.notifications': 2,
+        'profile.default_content_settings.popups': 0,
+        'download.prompt_for_download': false,
+        'download.default_directory': this.downloadPath,
+        'plugins.always_open_pdf_externally': true,
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false
+      });
+      
+      // Unique temp directory
+      const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      options.addArguments(`--user-data-dir=${tempDir}`);
+      
+      // Custom Chrome binary path
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
+      
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
       
       // Store driver info
       this.drivers[instanceId] = {
@@ -403,7 +519,55 @@ class BrowserService {
         script: 45000
       });
       
-      logger.info(`Undetected WebDriver initialized: ${instanceId}`);
+      // Script yang lebih kuat untuk menghindari deteksi
+      await driver.executeScript(`
+        // Overwrite navigator properties
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined
+        });
+        
+        // Pura-pura seperti pengguna normal
+        const originalQuery = window.navigator.permissions ? window.navigator.permissions.query : null;
+        if (originalQuery) {
+          window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+              Promise.resolve({ state: Notification.permission }) :
+              originalQuery(parameters)
+          );
+        }
+        
+        // Hapus tanda otomasi
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+        
+        // Tambahkan beberapa data pluginnya
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            return [{
+              0: {type: "application/pdf"},
+              description: "Portable Document Format",
+              filename: "internal-pdf-viewer",
+              length: 1,
+              name: "Chrome PDF Plugin"
+            }];
+          }
+        });
+        
+        // Tambahkan languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en', 'id']
+        });
+        
+        // Override property deteksi
+        const prototypeObj = {};
+        prototypeObj.toString = function toString() {
+          return "[object PluginArray]";
+        };
+        Object.setPrototypeOf(navigator.plugins, prototypeObj);
+      `);
+      
+      logger.info(`Reinforced WebDriver initialized: ${instanceId}`);
       return driver;
     } catch (error) {
       delete this.drivers[instanceId];
@@ -457,23 +621,35 @@ class BrowserService {
     
     try {
       const domain = this._extractDomain(url);
-      const driver = await this.initDriver(requestId, true);
+      const driver = await this.initReinforcedDriver(requestId, true);
       
-      // Load saved cookies if available
+      // Apply the same user agent for all related requests
+      await driver.executeScript(`
+        Object.defineProperty(navigator, 'userAgent', {
+          get: () => "${this.stealthUserAgent}"
+        });
+      `);
+      
+      // Load saved cookies
       await this._loadCookiesForDomain(domain, requestId);
       
-      logger.info(`Loading URL with undetected-chromedriver: ${url}`);
+      logger.info(`Loading URL: ${url}`);
       await driver.get(url);
       
-      // Wait for body to be present
+      // Wait for body to be present with increased timeout
       await driver.wait(until.elementLocated(By.tagName('body')), 30000);
-      
-      // Allow scripts to run and page to fully load
-      await driver.sleep(3000);
       
       // Get page source and check for Cloudflare
       const pageSource = await driver.getPageSource();
       const currentUrl = await driver.getCurrentUrl();
+      
+      // Additional wait for Cloudflare redirect
+      if (currentUrl.includes('cloudflare') || 
+          pageSource.includes('Cloudflare') || 
+          pageSource.includes('challenge')) {
+        logger.info('Cloudflare page detected, waiting for possible redirect...');
+        await driver.sleep(5000);
+      }
       
       // Check for verification challenge
       if (
@@ -530,7 +706,7 @@ class BrowserService {
     const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
     try {
-      const driver = await this.initDriver(downloadId, true);
+      const driver = await this.initReinforcedDriver(downloadId, true);
       
       // Extract domain to load cookies
       const domain = this._extractDomain(imageUrl);
@@ -576,23 +752,42 @@ class BrowserService {
       const tempDir = path.join('/tmp', `chrome-verify-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
       fs.mkdirSync(tempDir, { recursive: true });
       
-      // Set up options
-      const options = new undetected.Options();
+      // Create visible browser instance (non-headless)
+      const options = new chrome.Options();
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
+      options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
       options.addArguments(`--user-data-dir=${tempDir}`);
       options.addArguments(`--user-agent=${this.stealthUserAgent}`);
       
-      // Custom Chrome binary path if provided
+      // Add stealth options for better Cloudflare bypass
+      options.addArguments('--disable-blink-features=AutomationControlled');
+      
+      // Set preferences for stealth
+      options.setUserPreferences({
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false,
+        'profile.default_content_setting_values.notifications': 2
+      });
+      
+      // Set Chrome binary path if provided
       if (config.selenium.chromeBinaryPath) {
         options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
       }
       
-      // Create a new driver instance for verification (non-headless)
-      const verifyDriver = await undetected.Builder()
-        .setChromeOptions(options)
-        .build();
+      // Create a new driver instance for verification
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      const builder = new Builder().forBrowser('chrome').setChromeOptions(options);
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const verifyDriver = await builder.build();
       
       // Set timeouts
       await verifyDriver.manage().setTimeouts({
@@ -601,8 +796,61 @@ class BrowserService {
         script: 30000
       });
       
+      // Try to hide WebDriver
+      await verifyDriver.executeScript(`
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined
+        });
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+      `);
+      
       // Extract domain
       const domain = this._extractDomain(url);
+      
+      // Load existing cookies if available
+      try {
+        const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+        if (fs.existsSync(cookieFile)) {
+          // First navigate to the domain
+          await verifyDriver.get(`https://${domain}`);
+          await verifyDriver.sleep(1000);
+          
+          // Load cookies
+          const cookiesJson = fs.readFileSync(cookieFile, 'utf8');
+          const cookies = JSON.parse(cookiesJson);
+          
+          // Add cookies
+          for (const cookie of cookies) {
+            try {
+              const cleanCookie = {
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path || '/',
+                expiry: cookie.expiry || cookie.expires,
+                secure: cookie.secure,
+                httpOnly: cookie.httpOnly
+              };
+              
+              Object.keys(cleanCookie).forEach(key => {
+                if (cleanCookie[key] === undefined || cleanCookie[key] === null) {
+                  delete cleanCookie[key];
+                }
+              });
+              
+              await verifyDriver.manage().addCookie(cleanCookie);
+            } catch (cookieError) {
+              // Ignore cookie errors
+            }
+          }
+          
+          logger.info(`Loaded existing cookies for domain: ${domain}`);
+        }
+      } catch (cookieError) {
+        logger.warn(`Error loading cookies: ${cookieError.message}`);
+      }
       
       // Navigate to the URL
       await verifyDriver.get(url);
@@ -814,14 +1062,14 @@ class BrowserService {
       const driver = session.driver;
       const domain = session.domain;
       
-      // Wait longer after verification to give Cloudflare time to process
+      // Tunggu lebih lama setelah verifikasi untuk memberikan waktu Cloudflare memproses
       await driver.sleep(5000);
       
-      // Refresh page to ensure cookies are applied
+      // Refresh halaman untuk memastikan cookie sudah diterapkan
       await driver.navigate().refresh();
       await driver.sleep(3000);
       
-      // Check if still on Cloudflare page
+      // Periksa apakah masih di halaman Cloudflare
       const pageSource = await driver.getPageSource();
       const currentUrl = await driver.getCurrentUrl();
       
@@ -843,38 +1091,38 @@ class BrowserService {
         };
       }
       
-      // Get all cookies, specifically looking for cf_clearance
+      // Dapatkan semua cookie, secara khusus mencari cf_clearance
       const cookies = await driver.manage().getCookies();
       let hasClearanceToken = false;
       
-      // Log and process all cookies with focus on Cloudflare cookies
+      // Catat dan proses semua cookie dengan fokus pada cookie Cloudflare
       const processedCookies = cookies.map(cookie => {
         const processedCookie = { ...cookie };
         
-        // Check if this is a cf_clearance cookie
+        // Periksa apakah ini cookie cf_clearance
         if (cookie.name === 'cf_clearance') {
           hasClearanceToken = true;
-          logger.info(`Found cf_clearance token: ${cookie.value.substring(0, 10)}...`);
+          logger.info(`Ditemukan token cf_clearance: ${cookie.value.substring(0, 10)}...`);
           
-          // Ensure proper domain for this cookie
+          // Pastikan domain yang benar untuk cookie ini
           if (!cookie.domain || !cookie.domain.startsWith('.')) {
             processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
           }
           
-          // Extend cookie expiry for safety
-          processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 hours
+          // Perluas masa berlaku cookie untuk keamanan
+          processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 jam
           processedCookie.httpOnly = true;
           processedCookie.secure = true;
         } else if (cookie.name && (
             cookie.name.startsWith('cf_') || 
             cookie.name.startsWith('__cf') ||
             cookie.name.includes('cloudflare'))) {
-          // Ensure proper domain for other Cloudflare cookies
+          // Pastikan domain yang benar untuk cookie Cloudflare lainnya
           if (!cookie.domain || !cookie.domain.startsWith('.')) {
             processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
           }
           
-          // Set required flags
+          // Set flags yang diperlukan
           processedCookie.httpOnly = true;
           processedCookie.secure = true;
         }
@@ -883,9 +1131,9 @@ class BrowserService {
       });
       
       if (!hasClearanceToken) {
-        logger.warn('cf_clearance token not found. Verification may not be complete.');
+        logger.warn('Token cf_clearance tidak ditemukan. Verifikasi mungkin belum selesai.');
         
-        // Try to determine challenge type from page
+        // Coba ambil tipe challenge dari halaman
         let challengeType = "unknown";
         try {
           if (pageSource.includes('captcha')) {
@@ -899,7 +1147,7 @@ class BrowserService {
         
         return {
           success: false,
-          message: `Verification incomplete. No cf_clearance token found. Please complete the ${challengeType} challenge and try again.`,
+          message: `Verifikasi belum selesai. Token cf_clearance tidak ditemukan. Harap selesaikan ${challengeType} challenge dan coba lagi.`,
           domain
         };
       }
@@ -993,53 +1241,6 @@ class BrowserService {
     } catch (error) {
       logger.error(`Error cleaning up expired sessions: ${error.message}`);
       return 0;
-    }
-  }
-
-  /**
-   * Check if the current page is still a Cloudflare verification page
-   * @param {string} sessionId - Session ID to check
-   * @returns {Promise<boolean>} True if still on Cloudflare
-   */
-  async isOnCloudflareVerification(sessionId) {
-    try {
-      // Check if session exists
-      if (!this.activeSessions[sessionId]) {
-        throw new Error(`Verification session ${sessionId} not found`);
-      }
-      
-      const session = this.activeSessions[sessionId];
-      const driver = session.driver;
-      
-      // Get current URL and page source
-      const currentUrl = await driver.getCurrentUrl();
-      const pageSource = await driver.getPageSource();
-      
-      // Check for Cloudflare patterns
-      const cloudflarePatterns = [
-        'Verify you are human',
-        'cloudflare',
-        'challenge',
-        'captcha',
-        'Please wait while we verify your browser'
-      ];
-      
-      // Check if URL contains cloudflare
-      if (currentUrl.includes('cloudflare')) {
-        return true;
-      }
-      
-      // Check if page source contains any Cloudflare patterns
-      for (const pattern of cloudflarePatterns) {
-        if (pageSource.includes(pattern)) {
-          return true;
-        }
-      }
-      
-      return false;
-    } catch (error) {
-      logger.error(`Error checking if on Cloudflare verification: ${error.message}`);
-      return true; // Assume still on verification on error
     }
   }
 
