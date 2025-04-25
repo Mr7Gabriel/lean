@@ -12,9 +12,6 @@
       padding: 20px;
       background-color: #f5f5f5;
       color: #333;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
     }
 
     .container {
@@ -26,42 +23,72 @@
       box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
     }
 
-    .verification-details {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
+    .remote-screen-popup {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 90%;
+      max-width: 1200px;
+      height: 80vh;
+      background-color: white;
+      border: 2px solid #3498db;
+      border-radius: 10px;
+      z-index: 1000;
+      display: none;
+      flex-direction: column;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
 
-    .remote-view {
-      position: relative;
-      width: 100%;
-      height: 600px;
-      border: 1px solid #ddd;
-      background-color: #f9f9f9;
+    .remote-screen-popup-header {
       display: flex;
-      justify-content: center;
+      justify-content: space-between;
       align-items: center;
+      padding: 10px;
+      background-color: #f1f1f1;
+      border-top-left-radius: 10px;
+      border-top-right-radius: 10px;
     }
 
-    #remote-frame {
+    .remote-screen-content {
+      flex-grow: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #remote-screen-iframe {
       width: 100%;
       height: 100%;
       border: none;
     }
 
-    .loading-overlay {
-      position: absolute;
+    .close-popup-btn {
+      background-color: #e74c3c;
+      color: white;
+      border: none;
+      padding: 5px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .verification-controls {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .overlay {
+      position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(255, 255, 255, 0.8);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      z-index: 10;
+      background: rgba(0,0,0,0.5);
+      z-index: 999;
+      display: none;
     }
 
+    /* Existing styles remain the same */
     .controls {
       display: flex;
       justify-content: center;
@@ -88,59 +115,64 @@
       cursor: not-allowed;
     }
 
-    .timer {
-      text-align: center;
-      font-size: 18px;
-      margin-top: 10px;
-      color: #e74c3c;
+    .verification-step {
+      margin-bottom: 15px;
+      padding: 10px;
+      background-color: #f9f9f9;
+      border-radius: 5px;
     }
 
-    #error-message {
-      color: #e74c3c;
-      text-align: center;
-      margin-top: 10px;
-    }
-
-    @media (max-width: 768px) {
-      .verification-details {
-        grid-template-columns: 1fr;
-      }
+    .verification-status {
+      font-weight: bold;
+      color: #2ecc71;
     }
   </style>
 </head>
 <body>
+  <!-- Overlay -->
+  <div id="overlay" class="overlay"></div>
+
+  <!-- Remote Screen Popup -->
+  <div id="remote-screen-popup" class="remote-screen-popup">
+    <div class="remote-screen-popup-header">
+      <h3>Remote Verification Browser</h3>
+      <button class="close-popup-btn" onclick="closeRemoteScreen()">Close</button>
+    </div>
+    <div class="remote-screen-content">
+      <iframe id="remote-screen-iframe" src="" allow="fullscreen"></iframe>
+    </div>
+  </div>
+
   <div class="container">
     <h1>Cloudflare Verification</h1>
     
-    <div class="verification-details">
-      <div>
-        <h2>Verification Instructions</h2>
-        <p>A verification challenge has been detected. Please complete the challenge in the browser window below:</p>
-        
-        <div id="session-info">
-          <p><strong>Session ID:</strong> <span id="session-id">Loading...</span></p>
-          <p><strong>Domain:</strong> <span id="session-domain">Loading...</span></p>
-          <p><strong>URL:</strong> <span id="session-url">Loading...</span></p>
-        </div>
-        
-        <div class="timer">
-          Time Remaining: <span id="time-remaining">--:--</span>
-        </div>
-        
-        <div id="error-message"></div>
-      </div>
-      
-      <div>
-        <h2>Verification Browser</h2>
-        <div class="remote-view">
-          <div id="loading-overlay" class="loading-overlay">
-            <p>Loading remote browser...</p>
-          </div>
-          <iframe id="remote-frame" src="" allow="fullscreen"></iframe>
-        </div>
-      </div>
+    <div class="verification-step">
+      <h2>Verification Instructions</h2>
+      <p>A verification challenge has been detected. Follow these steps:</p>
+      <ol>
+        <li>Click "Open Remote Browser" to view the verification page</li>
+        <li>Complete the CAPTCHA or verification challenge in the browser</li>
+        <li>Click the new "Verify" button to confirm you've completed the challenge</li>
+      </ol>
     </div>
     
+    <div id="session-info">
+      <p><strong>Session ID:</strong> <span id="session-id">Loading...</span></p>
+      <p><strong>Domain:</strong> <span id="session-domain">Loading...</span></p>
+      <p><strong>URL:</strong> <span id="session-url">Loading...</span></p>
+    </div>
+    
+    <div class="timer">
+      Time Remaining: <span id="time-remaining">--:--</span>
+    </div>
+    
+    <div id="error-message" style="color: red;"></div>
+    
+    <div class="verification-controls">
+      <button id="open-remote-browser-btn">Open Remote Browser</button>
+      <button id="verify-manually-btn" disabled>Verify</button>
+    </div>
+
     <div class="controls">
       <button id="complete-btn" disabled>Complete Verification</button>
       <button id="cancel-btn">Cancel Verification</button>
@@ -157,11 +189,16 @@
     const sessionDomainElem = document.getElementById('session-domain');
     const sessionUrlElem = document.getElementById('session-url');
     const timeRemainingElem = document.getElementById('time-remaining');
-    const remoteFrame = document.getElementById('remote-frame');
-    const loadingOverlay = document.getElementById('loading-overlay');
+    const errorMessageElem = document.getElementById('error-message');
+    const remoteScreenPopup = document.getElementById('remote-screen-popup');
+    const remoteScreenIframe = document.getElementById('remote-screen-iframe');
+    const overlay = document.getElementById('overlay');
+    
+    // Buttons
+    const openRemoteBrowserBtn = document.getElementById('open-remote-browser-btn');
+    const verifyManuallyBtn = document.getElementById('verify-manually-btn');
     const completeBtn = document.getElementById('complete-btn');
     const cancelBtn = document.getElementById('cancel-btn');
-    const errorMessageElem = document.getElementById('error-message');
 
     // Session refresh interval
     let statusInterval;
@@ -178,6 +215,8 @@
     }
     
     // Event Listeners
+    openRemoteBrowserBtn.addEventListener('click', openRemoteScreen);
+    verifyManuallyBtn.addEventListener('click', handleManualVerification);
     cancelBtn.addEventListener('click', cancelVerification);
     completeBtn.addEventListener('click', completeVerification);
     
@@ -198,13 +237,11 @@
           const seconds = Math.floor((sessionInfo.remainingMinutes % 1) * 60);
           timeRemainingElem.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
           
-          // If remote view URL is available, load it
+          // If remote view URL is available
           if (sessionInfo.remoteViewUrl) {
-            loadRemoteView(sessionInfo.remoteViewUrl);
+            // Store remote view URL for later use
+            remoteScreenIframe.dataset.remoteViewUrl = sessionInfo.remoteViewUrl;
           }
-          
-          // Enable complete button
-          completeBtn.disabled = false;
           
           // Clear any previous error
           errorMessageElem.textContent = '';
@@ -216,27 +253,37 @@
       }
     }
     
-    async function loadRemoteView(remoteViewUrl) {
-      try {
-        const response = await fetch(remoteViewUrl);
-        const data = await response.json();
+    function openRemoteScreen() {
+      const remoteViewUrl = remoteScreenIframe.dataset.remoteViewUrl;
+      
+      if (remoteViewUrl) {
+        // Load the remote view URL into the iframe
+        remoteScreenIframe.src = remoteViewUrl;
         
-        if (data.status === 'success') {
-          // Check if we have an actual remote view data
-          if (data.data && data.data.screenshot) {
-            // Assuming the screenshot is a base64 or data URL
-            remoteFrame.src = data.data.screenshot;
-            loadingOverlay.style.display = 'none';
-          } else {
-            // If no screenshot, show error
-            loadingOverlay.innerHTML = '<p>No remote view available</p>';
-          }
-        } else {
-          loadingOverlay.innerHTML = `<p>Error: ${data.message}</p>`;
-        }
-      } catch (error) {
-        loadingOverlay.innerHTML = `<p>Error loading remote view: ${error.message}</p>`;
+        // Show popup and overlay
+        remoteScreenPopup.style.display = 'flex';
+        overlay.style.display = 'block';
+        
+        // Enable verify button
+        verifyManuallyBtn.disabled = false;
+      } else {
+        showError('Remote view URL not available. Please refresh the page.');
       }
+    }
+    
+    function closeRemoteScreen() {
+      // Hide popup and overlay
+      remoteScreenPopup.style.display = 'none';
+      overlay.style.display = 'none';
+      
+      // Clear iframe source
+      remoteScreenIframe.src = '';
+    }
+    
+    function handleManualVerification() {
+      // This function is called when user confirms they've completed the verification
+      showError('Please verify you have completed the CAPTCHA or challenge.');
+      completeBtn.disabled = false;
     }
     
     async function completeVerification() {
@@ -258,7 +305,9 @@
           errorMessageElem.style.color = 'green';
           errorMessageElem.textContent = 'Verification completed successfully!';
           
-          // Disable buttons
+          // Disable all buttons
+          openRemoteBrowserBtn.disabled = true;
+          verifyManuallyBtn.disabled = true;
           completeBtn.disabled = true;
           cancelBtn.disabled = true;
         } else {
@@ -294,7 +343,9 @@
           // Show cancellation message
           errorMessageElem.textContent = 'Verification session cancelled.';
           
-          // Disable buttons
+          // Disable all buttons
+          openRemoteBrowserBtn.disabled = true;
+          verifyManuallyBtn.disabled = true;
           completeBtn.disabled = true;
           cancelBtn.disabled = true;
         } else {

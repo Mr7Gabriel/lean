@@ -10,45 +10,59 @@ const { execSync, spawn } = require('child_process');
 
 class BrowserService {
   constructor() {
-    this.drivers = {};  // Map to store multiple driver instances
+    // Drivers storage
+    this.drivers = {};
+    
+    // Paths
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
+    
+    // Active verification sessions
     this.activeSessions = {};
+    
+    // Xvfb process and flag
     this.xvfbProcess = null;
     this.hasXvfb = false;
     
     // Create necessary directories
-    if (!fs.existsSync(this.downloadPath)) {
-      fs.mkdirSync(this.downloadPath, { recursive: true });
-    }
+    this._createDirectories();
     
-    if (!fs.existsSync(this.cookiesPath)) {
-      fs.mkdirSync(this.cookiesPath, { recursive: true });
-    }
-    
-    // Kill any hanging Chrome processes
+    // Kill hanging Chrome processes
     this._killChrome();
     
-    // Start Xvfb for virtual display
+    // Start virtual display
     this._startXvfb();
   }
-  
+
+  /**
+   * Create necessary directories
+   * @private
+   */
+  _createDirectories() {
+    const directories = [this.downloadPath, this.cookiesPath];
+    
+    directories.forEach(dir => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
+  }
+
   /**
    * Start Xvfb virtual display server
    * @private
    */
   _startXvfb() {
     try {
-      // Check if xvfb-run is available
+      // Check for xvfb-run
       try {
         execSync('which xvfb-run', { stdio: 'ignore' });
-        logger.info('Found xvfb-run, will use it for virtual display');
+        logger.info('Found xvfb-run for virtual display');
         this.hasXvfb = true;
       } catch (e) {
-        // xvfb-run not found, we'll need to install it
-        logger.warn('xvfb-run not found. Some features may not work properly in headless mode.');
+        logger.warn('xvfb-run not found. Virtual display might not work properly.');
         
-        // Try to install xvfb if possible
+        // Attempt installation
         try {
           logger.info('Attempting to install xvfb...');
           execSync('apt-get update && apt-get install -y xvfb', { stdio: 'inherit' });
@@ -60,15 +74,14 @@ class BrowserService {
         }
       }
       
-      // Start Xvfb process if available
+      // Start Xvfb if available
       if (this.hasXvfb) {
-        // Set up a virtual display with Xvfb
         this.xvfbProcess = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24', '-ac'], {
           stdio: 'ignore',
           detached: true
         });
         
-        // Make sure the DISPLAY environment variable is set
+        // Set display environment
         process.env.DISPLAY = ':99';
         
         logger.info('Started Xvfb virtual display server on :99');
@@ -79,274 +92,38 @@ class BrowserService {
   }
 
   /**
-   * Kill any hanging Chrome processes
+   * Kill hanging Chrome processes
    * @private
    */
   _killChrome() {
-    try {
-      if (process.platform === 'linux') {
-        execSync('pkill -f chrome', { stdio: 'ignore' });
-        execSync('pkill -f chromedriver', { stdio: 'ignore' });
-      } else if (process.platform === 'win32') {
-        execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
-        execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
-      } else if (process.platform === 'darwin') {
-        execSync('pkill -f "Google Chrome"', { stdio: 'ignore' });
-        execSync('pkill -f chromedriver', { stdio: 'ignore' });
-      }
-      logger.info('Killed any hanging Chrome processes');
-    } catch (error) {
-      logger.info('No hanging Chrome processes found to kill');
-    }
-  }
-
-  /**
-   * Initialize WebDriver with headless mode
-   * @param {string} instanceId - Unique ID for this driver instance
-   * @param {boolean} headless - Whether to run in headless mode
-   * @returns {Promise<WebDriver>} Selenium WebDriver instance
-   */
-  async initDriver(instanceId = 'default', headless = true) {
-    // Close existing driver with this ID if it exists
-    if (this.drivers[instanceId]) {
-      await this.closeDriver(instanceId);
-    }
+    const platforms = {
+      linux: [
+        'pkill -f chrome',
+        'pkill -f chromedriver'
+      ],
+      win32: [
+        'taskkill /F /IM chrome.exe /T',
+        'taskkill /F /IM chromedriver.exe /T'
+      ],
+      darwin: [
+        'pkill -f "Google Chrome"',
+        'pkill -f chromedriver'
+      ]
+    };
 
     try {
-      // Generate random user agent
-      const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
-      
-      // Set Chrome options
-      const options = new chrome.Options();
-      if (headless) {
-        options.addArguments('--headless=new');
-      }
-      options.addArguments('--no-sandbox');
-      options.addArguments('--disable-dev-shm-usage');
-      options.addArguments('--disable-gpu');
-      options.addArguments('--window-size=1920,1080');
-      options.addArguments(`--user-agent=${userAgent}`);
-      options.addArguments('--disable-extensions');
-      options.addArguments('--disable-web-security');
-      options.addArguments('--ignore-certificate-errors');
-      options.addArguments('--allow-running-insecure-content');
-      options.addArguments('--disable-application-cache');
-      options.addArguments('--disable-infobars');
-      
-      // Create unique temp directory for Chrome
-      const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
-      fs.mkdirSync(tempDir, { recursive: true });
-      options.addArguments(`--user-data-dir=${tempDir}`);
-      
-      // Configure downloads
-      options.setUserPreferences({
-        'download.default_directory': this.downloadPath,
-        'download.prompt_for_download': false,
-        'download.directory_upgrade': true,
-        'safebrowsing.enabled': false
-      });
-      
-      // Set Chrome binary path if provided
-      if (config.selenium.chromeBinaryPath) {
-        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
-      }
-      
-      // Create a ChromeDriver service
-      let service = null;
-      if (config.selenium.chromeDriverPath) {
-        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
-      }
-      
-      // Build WebDriver
-      const builder = new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options);
-      
-      if (service) {
-        builder.setChromeService(service);
-      }
-      
-      const driver = await builder.build();
-      
-      // Store driver
-      this.drivers[instanceId] = {
-        driver,
-        tempDir
-      };
-      
-      // Set timeouts
-      await driver.manage().setTimeouts({
-        implicit: 10000,
-        pageLoad: 30000,
-        script: 30000
-      });
-      
-      logger.info(`Selenium WebDriver initialized successfully for instance ${instanceId}`);
-      return driver;
-    } catch (error) {
-      // Remove failed driver entry
-      delete this.drivers[instanceId];
-      
-      logger.error(`Error initializing WebDriver: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Close WebDriver
-   * @param {string} instanceId - ID of driver to close
-   * @returns {Promise<void>}
-   */
-  async closeDriver(instanceId = 'default') {
-    const driverInfo = this.drivers[instanceId];
-    if (driverInfo && driverInfo.driver) {
-      try {
-        await driverInfo.driver.quit();
-        logger.info(`WebDriver ${instanceId} closed successfully`);
-        
-        // Clean up temp directory
-        if (driverInfo.tempDir && fs.existsSync(driverInfo.tempDir)) {
-          try {
-            // Simple cleanup of directory (non-recursive)
-            fs.rmSync(driverInfo.tempDir, { recursive: true, force: true });
-          } catch (cleanupError) {
-            logger.warn(`Could not clean up temp directory: ${cleanupError.message}`);
-          }
+      const platformCommands = platforms[process.platform] || [];
+      platformCommands.forEach(cmd => {
+        try {
+          execSync(cmd, { stdio: 'ignore' });
+        } catch (cmdError) {
+          // Ignore errors if no processes found
         }
-      } catch (error) {
-        logger.error(`Error closing WebDriver ${instanceId}: ${error.message}`);
-      } finally {
-        delete this.drivers[instanceId];
-      }
-    }
-  }
-
-  /**
-   * Close all WebDriver instances
-   * @returns {Promise<void>}
-   */
-  async closeAllDrivers() {
-    const instanceIds = Object.keys(this.drivers);
-    for (const id of instanceIds) {
-      await this.closeDriver(id);
-    }
-    
-    // Also kill any hanging Chrome processes
-    this._killChrome();
-    
-    logger.info('All WebDrivers closed successfully');
-  }
-
-  /**
-   * Get page content with cookie handling
-   * @param {string} url - URL to load
-   * @returns {Promise<string>} HTML content
-   */
-  async getPage(url) {
-    // Generate a unique ID for this page request
-    const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    
-    try {
-      // Parse domain from URL
-      const domain = this._extractDomain(url);
+      });
       
-      // Initialize WebDriver in headless mode with unique ID
-      const driver = await this.initDriver(requestId, true);
-      
-      // Try to load cookies for this domain
-      await this._loadCookiesForDomain(domain, requestId);
-      
-      logger.info(`Loading URL with Selenium: ${url}`);
-      await driver.get(url);
-      
-      // Wait for page to load
-      await driver.wait(until.elementLocated(By.tagName('body')), 20000);
-      
-      // Check if page has Cloudflare challenge or other verification
-      const pageSource = await driver.getPageSource();
-      
-      if (
-        pageSource.includes('Verify you are human') || 
-        (pageSource.includes('cloudflare') &&
-        pageSource.includes('challenge')) ||
-        pageSource.includes('captcha')
-      ) {
-        logger.warn('Cloudflare verification or CAPTCHA detected!');
-        
-        // Close the headless driver
-        await this.closeDriver(requestId);
-        
-        // Launch a verification session and throw special error
-        const verificationSession = await this.launchVerificationSession(url);
-        
-        // Format error object correctly with all required properties
-        throw {
-          message: 'Verification required',
-          verificationUrl: `/verify?session=${verificationSession.sessionId}`,
-          sessionId: verificationSession.sessionId,
-          domain: domain
-        };
-      }
-      
-      // If we reach here, no verification needed or cookies worked
-      // Get the page source
-      const html = await driver.getPageSource();
-      
-      // Save cookies for future use
-      await this._saveCookiesForDomain(domain, requestId);
-      
-      // Clean up driver
-      await this.closeDriver(requestId);
-      
-      return html;
+      logger.info('Killed hanging Chrome processes');
     } catch (error) {
-      // Clean up driver
-      await this.closeDriver(requestId);
-      
-      // If it's our special verification error, propagate it
-      if (error.verificationUrl) {
-        throw error;
-      }
-      
-      logger.error(`Error in getPage: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Download image using WebDriver
-   * @param {string} imageUrl - Image URL to download
-   * @param {string} outputPath - Path to save image
-   * @returns {Promise<string>} Path to downloaded image
-   */
-  async downloadImage(imageUrl, outputPath) {
-    const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    
-    try {
-      const driver = await this.initDriver(downloadId, true);
-      
-      // Navigate to image URL
-      await driver.get(imageUrl);
-      await driver.sleep(2000);
-      
-      // Find the image element
-      const imgElement = await driver.findElement(By.tagName('img'));
-      
-      // Take screenshot of the image
-      await imgElement.takeScreenshot(outputPath);
-      
-      logger.info(`Image downloaded successfully to: ${outputPath}`);
-      
-      // Clean up driver
-      await this.closeDriver(downloadId);
-      
-      return outputPath;
-    } catch (error) {
-      // Clean up driver
-      await this.closeDriver(downloadId);
-      
-      logger.error(`Error downloading image: ${error.message}`);
-      throw error;
+      logger.info('No hanging Chrome processes found');
     }
   }
 
@@ -371,15 +148,6 @@ class BrowserService {
       logger.error(`Error extracting domain from URL: ${error.message}`);
       return '';
     }
-  }
-
-  /**
-   * Generate a unique session ID
-   * @returns {string} Unique ID
-   * @private
-   */
-  _generateSessionId() {
-    return crypto.randomBytes(16).toString('hex');
   }
 
   /**
@@ -465,6 +233,237 @@ class BrowserService {
     } catch (error) {
       logger.error(`Error loading cookies for domain ${domain}: ${error.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Generate a unique session ID
+   * @returns {string} Unique ID
+   * @private
+   */
+  _generateSessionId() {
+    return crypto.randomBytes(16).toString('hex');
+  }
+
+  /**
+   * Initialize WebDriver
+   * @param {string} instanceId - Unique driver instance ID
+   * @param {boolean} headless - Run in headless mode
+   * @returns {Promise<WebDriver>} Selenium WebDriver
+   */
+  async initDriver(instanceId = 'default', headless = true) {
+    // Close existing driver if it exists
+    if (this.drivers[instanceId]) {
+      await this.closeDriver(instanceId);
+    }
+
+    try {
+      // Random user agent
+      const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
+      
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
+      
+      // Common Chrome arguments
+      const commonArgs = [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        `--user-agent=${userAgent}`,
+        '--disable-extensions',
+        '--disable-web-security',
+        '--ignore-certificate-errors',
+        '--allow-running-insecure-content',
+        '--disable-application-cache',
+        '--disable-infobars'
+      ];
+      
+      options.addArguments(commonArgs);
+      
+      // Unique temp directory
+      const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      options.addArguments(`--user-data-dir=${tempDir}`);
+      
+      // Download preferences
+      options.setUserPreferences({
+        'download.default_directory': this.downloadPath,
+        'download.prompt_for_download': false,
+        'download.directory_upgrade': true,
+        'safebrowsing.enabled': false
+      });
+      
+      // Custom Chrome binary path
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
+      
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
+      
+      // Store driver info
+      this.drivers[instanceId] = {
+        driver,
+        tempDir
+      };
+      
+      // Set timeouts
+      await driver.manage().setTimeouts({
+        implicit: 10000,
+        pageLoad: 30000,
+        script: 30000
+      });
+      
+      logger.info(`WebDriver initialized: ${instanceId}`);
+      return driver;
+    } catch (error) {
+      delete this.drivers[instanceId];
+      logger.error(`WebDriver init error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Close specific WebDriver
+   * @param {string} instanceId - Driver instance ID
+   */
+  async closeDriver(instanceId = 'default') {
+    const driverInfo = this.drivers[instanceId];
+    if (driverInfo && driverInfo.driver) {
+      try {
+        await driverInfo.driver.quit();
+        
+        // Clean temp directory
+        if (driverInfo.tempDir && fs.existsSync(driverInfo.tempDir)) {
+          fs.rmSync(driverInfo.tempDir, { recursive: true, force: true });
+        }
+      } catch (error) {
+        logger.error(`Driver close error: ${error.message}`);
+      } finally {
+        delete this.drivers[instanceId];
+      }
+    }
+  }
+
+  /**
+   * Close all WebDriver instances
+   */
+  async closeAllDrivers() {
+    const instanceIds = Object.keys(this.drivers);
+    for (const id of instanceIds) {
+      await this.closeDriver(id);
+    }
+    
+    this._killChrome();
+    logger.info('All WebDrivers closed');
+  }
+
+  /**
+   * Get page content
+   * @param {string} url - URL to load
+   * @returns {Promise<string>} HTML content
+   */
+  async getPage(url) {
+    const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
+    try {
+      const domain = this._extractDomain(url);
+      const driver = await this.initDriver(requestId, true);
+      
+      await this._loadCookiesForDomain(domain, requestId);
+      
+      logger.info(`Loading URL: ${url}`);
+      await driver.get(url);
+      
+      await driver.wait(until.elementLocated(By.tagName('body')), 20000);
+      
+      const pageSource = await driver.getPageSource();
+      
+      // Cloudflare/bot detection
+      if (
+        pageSource.includes('Verify you are human') || 
+        (pageSource.includes('cloudflare') && pageSource.includes('challenge')) ||
+        pageSource.includes('captcha')
+      ) {
+        logger.warn('Verification challenge detected!');
+        
+        await this.closeDriver(requestId);
+        
+        const verificationSession = await this.launchVerificationSession(url);
+        
+        throw {
+          message: 'Verification required',
+          verificationUrl: `/verify?session=${verificationSession.sessionId}`,
+          sessionId: verificationSession.sessionId,
+          domain: domain
+        };
+      }
+      
+      const html = await driver.getPageSource();
+      
+      await this._saveCookiesForDomain(domain, requestId);
+      await this.closeDriver(requestId);
+      
+      return html;
+    } catch (error) {
+      await this.closeDriver(requestId);
+      
+      if (error.verificationUrl) {
+        throw error;
+      }
+      
+      logger.error(`Page load error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Download image via WebDriver
+   * @param {string} imageUrl - Image URL
+   * @param {string} outputPath - Save path
+   * @returns {Promise<string>} Image path
+   */
+  async downloadImage(imageUrl, outputPath) {
+    const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
+    try {
+      const driver = await this.initDriver(downloadId, true);
+      
+      await driver.get(imageUrl);
+      await driver.sleep(2000);
+      
+      const imgElement = await driver.findElement(By.tagName('img'));
+      await imgElement.takeScreenshot(outputPath);
+      logger.info(`Image downloaded: ${outputPath}`);
+      
+      await this.closeDriver(downloadId);
+      
+      return outputPath;
+    } catch (error) {
+      await this.closeDriver(downloadId);
+      
+      logger.error(`Image download error: ${error.message}`);
+      throw error;
     }
   }
 
@@ -606,14 +605,38 @@ class BrowserService {
       
       // Take screenshot of the current browser session
       const driver = session.driver;
+      
+      try {
+        // Attempt to scroll to bottom and top to render full page
+        await driver.executeScript('window.scrollTo(0, document.body.scrollHeight)');
+        await driver.sleep(500);
+        await driver.executeScript('window.scrollTo(0, 0)');
+        await driver.sleep(500);
+      } catch (scrollError) {
+        logger.warn(`Error during page scroll: ${scrollError.message}`);
+      }
+      
+      // Take screenshot
       const screenshot = await driver.takeScreenshot();
       
-      // Return screenshot as data URL
+      // Determine page details
+      let pageTitle = '';
+      let pageUrl = '';
+      
+      try {
+        pageTitle = await driver.getTitle();
+        pageUrl = await driver.getCurrentUrl();
+      } catch (detailError) {
+        logger.warn(`Error getting page details: ${detailError.message}`);
+      }
+      
+      // Return screenshot as data URL with additional metadata
       return {
         sessionId,
         screenshot: `data:image/png;base64,${screenshot}`,
-        url: session.url,
+        url: pageUrl || session.url,
         domain: session.domain,
+        title: pageTitle,
         startTime: session.startTime,
         expiresAt: session.expiresAt,
         remainingMinutes: Math.floor((session.expiresAt - Date.now()) / 60000)
@@ -736,7 +759,7 @@ class BrowserService {
       return 0;
     }
   }
-  
+
   /**
    * Cleanup method to stop Xvfb and other resources
    */

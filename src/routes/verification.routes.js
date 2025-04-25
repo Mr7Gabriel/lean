@@ -26,7 +26,7 @@ router.get('/:sessionId', async (req, res, next) => {
       status: 'success',
       data: {
         ...sessionStatus,
-        remoteViewUrl: `/api/verify/${sessionId}/view`  // New route for remote view
+        remoteViewUrl: `/api/verify/${sessionId}/view`  // Route for remote view
       }
     });
   } catch (error) {
@@ -55,12 +55,13 @@ router.get('/:sessionId/view', async (req, res, next) => {
       });
     }
     
-    const sessionStatus = await browserService.getRemoteViewData(sessionId);
+    // Get remote view data (screenshot)
+    const remoteViewData = await browserService.getRemoteViewData(sessionId);
     
-    // Return remote view data
+    // Return the screenshot data
     res.json({
       status: 'success',
-      data: sessionStatus
+      data: remoteViewData
     });
   } catch (error) {
     logger.error(`Error getting remote view: ${error.message}`);
@@ -94,7 +95,8 @@ router.post('/:sessionId/complete', async (req, res, next) => {
       status: 'success',
       message: result.message,
       data: {
-        cookieCount: result.cookieCount
+        cookieCount: result.cookieCount,
+        domain: result.domain
       }
     });
   } catch (error) {
