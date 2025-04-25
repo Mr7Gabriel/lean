@@ -53,13 +53,16 @@
     .remote-screen-content {
       flex-grow: 1;
       position: relative;
-      overflow: hidden;
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
     }
 
-    #remote-screen-iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
+    #remote-screen-image {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
     }
 
     .close-popup-btn {
@@ -69,12 +72,6 @@
       padding: 5px 10px;
       border-radius: 4px;
       cursor: pointer;
-    }
-
-    .verification-controls {
-      display: flex;
-      gap: 10px;
-      margin-top: 10px;
     }
 
     .overlay {
@@ -88,8 +85,7 @@
       display: none;
     }
 
-    /* Existing styles remain the same */
-    .controls {
+    .controls, .verification-controls {
       display: flex;
       justify-content: center;
       gap: 10px;
@@ -122,9 +118,35 @@
       border-radius: 5px;
     }
 
-    .verification-status {
-      font-weight: bold;
-      color: #2ecc71;
+    .error-message {
+      color: #e74c3c;
+      margin-top: 10px;
+      text-align: center;
+    }
+
+    .timer {
+      text-align: center;
+      font-size: 18px;
+      margin-top: 10px;
+      color: #e74c3c;
+    }
+
+    .loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255,255,255,0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 10;
+    }
+
+    #loading-text {
+      font-size: 18px;
+      color: #3498db;
     }
   </style>
 </head>
@@ -139,7 +161,10 @@
       <button class="close-popup-btn" onclick="closeRemoteScreen()">Close</button>
     </div>
     <div class="remote-screen-content">
-      <iframe id="remote-screen-iframe" src="" allow="fullscreen"></iframe>
+      <div id="loading-overlay" class="loading-overlay">
+        <span id="loading-text">Loading remote browser...</span>
+      </div>
+      <img id="remote-screen-image" src="" alt="Remote Browser Screen">
     </div>
   </div>
 
@@ -151,8 +176,8 @@
       <p>A verification challenge has been detected. Follow these steps:</p>
       <ol>
         <li>Click "Open Remote Browser" to view the verification page</li>
-        <li>Complete the CAPTCHA or verification challenge in the browser</li>
-        <li>Click the new "Verify" button to confirm you've completed the challenge</li>
+        <li>Complete the CAPTCHA or verification challenge</li>
+        <li>Click the "Verify" button to confirm you've completed the challenge</li>
       </ol>
     </div>
     
@@ -166,11 +191,11 @@
       Time Remaining: <span id="time-remaining">--:--</span>
     </div>
     
-    <div id="error-message" style="color: red;"></div>
+    <div id="error-message" class="error-message"></div>
     
     <div class="verification-controls">
       <button id="open-remote-browser-btn">Open Remote Browser</button>
-      <button id="verify-manually-btn" disabled>Verify</button>
+      <button id="verify-manually-btn" disabled>Verify Challenge</button>
     </div>
 
     <div class="controls">
@@ -191,7 +216,8 @@
     const timeRemainingElem = document.getElementById('time-remaining');
     const errorMessageElem = document.getElementById('error-message');
     const remoteScreenPopup = document.getElementById('remote-screen-popup');
-    const remoteScreenIframe = document.getElementById('remote-screen-iframe');
+    const remoteScreenImage = document.getElementById('remote-screen-image');
+    const loadingOverlay = document.getElementById('loading-overlay');
     const overlay = document.getElementById('overlay');
     
     // Buttons
@@ -240,7 +266,7 @@
           // If remote view URL is available
           if (sessionInfo.remoteViewUrl) {
             // Store remote view URL for later use
-            remoteScreenIframe.dataset.remoteViewUrl = sessionInfo.remoteViewUrl;
+            remoteScreenImage.dataset.remoteViewUrl = sessionInfo.remoteViewUrl;
           }
           
           // Clear any previous error
@@ -253,19 +279,41 @@
       }
     }
     
-    function openRemoteScreen() {
-      const remoteViewUrl = remoteScreenIframe.dataset.remoteViewUrl;
+    async function openRemoteScreen() {
+      const remoteViewUrl = remoteScreenImage.dataset.remoteViewUrl;
       
       if (remoteViewUrl) {
-        // Load the remote view URL into the iframe
-        remoteScreenIframe.src = remoteViewUrl;
+        // Show loading overlay
+        loadingOverlay.style.display = 'flex';
+        remoteScreenImage.src = '';
         
-        // Show popup and overlay
-        remoteScreenPopup.style.display = 'flex';
-        overlay.style.display = 'block';
-        
-        // Enable verify button
-        verifyManuallyBtn.disabled = false;
+        try {
+          const response = await fetch(remoteViewUrl);
+          const data = await response.json();
+          
+          if (data.status === 'success' && data.data && data.data.screenshot) {
+            // Set image source
+            remoteScreenImage.src = data.data.screenshot;
+            
+            // Hide loading overlay when image loads
+            remoteScreenImage.onload = () => {
+              loadingOverlay.style.display = 'none';
+            };
+            
+            // Show popup and overlay
+            remoteScreenPopup.style.display = 'flex';
+            overlay.style.display = 'block';
+            
+            // Enable verify button
+            verifyManuallyBtn.disabled = false;
+          } else {
+            showError('Failed to load remote view');
+            loadingOverlay.style.display = 'none';
+          }
+        } catch (error) {
+          showError(`Error loading remote screen: ${error.message}`);
+          loadingOverlay.style.display = 'none';
+        }
       } else {
         showError('Remote view URL not available. Please refresh the page.');
       }
@@ -276,13 +324,13 @@
       remoteScreenPopup.style.display = 'none';
       overlay.style.display = 'none';
       
-      // Clear iframe source
-      remoteScreenIframe.src = '';
+      // Clear image source
+      remoteScreenImage.src = '';
     }
     
     function handleManualVerification() {
       // This function is called when user confirms they've completed the verification
-      showError('Please verify you have completed the CAPTCHA or challenge.');
+      showError('Please confirm you have completed the CAPTCHA or challenge.');
       completeBtn.disabled = false;
     }
     
