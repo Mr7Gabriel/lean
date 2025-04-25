@@ -550,6 +550,76 @@ class BrowserService {
   }
 
   /**
+   * Perform remote control action on a verification session
+   * @param {string} sessionId - Session ID
+   * @param {object} action - Remote control action details
+   * @returns {Promise<object>} Action result
+   */
+  async remoteControlAction(sessionId, action) {
+    try {
+      // Check if session exists
+      if (!this.activeSessions[sessionId]) {
+        throw new Error(`Verification session ${sessionId} not found`);
+      }
+      
+      const session = this.activeSessions[sessionId];
+      const driver = session.driver;
+      
+      // Check if session has expired
+      if (Date.now() > session.expiresAt) {
+        await this.closeVerificationSession(sessionId);
+        throw new Error(`Verification session ${sessionId} has expired`);
+      }
+      
+      // Perform action based on type
+      switch (action.action) {
+        case 'mousedown':
+          await driver.actions()
+            .move({ x: action.x, y: action.y })
+            .press()
+            .perform();
+          break;
+        
+        case 'mouseup':
+          await driver.actions()
+            .move({ x: action.x, y: action.y })
+            .release()
+            .perform();
+          break;
+        
+        case 'mousemove':
+          await driver.actions()
+            .move({ x: action.x, y: action.y })
+            .perform();
+          break;
+        
+        case 'keydown':
+          await driver.actions()
+            .keyDown(action.key)
+            .perform();
+          break;
+        
+        case 'keyup':
+          await driver.actions()
+            .keyUp(action.key)
+            .perform();
+          break;
+        
+        default:
+          throw new Error(`Unsupported remote control action: ${action.action}`);
+      }
+      
+      // Optional: Add a small delay to stabilize the browser state
+      await driver.sleep(50);
+      
+      return { success: true };
+    } catch (error) {
+      logger.error(`Remote control error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Get verification session status
    * @param {string} sessionId - Session ID to check
    * @returns {Promise<object>} Session status

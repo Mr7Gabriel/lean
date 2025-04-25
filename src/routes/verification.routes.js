@@ -148,4 +148,49 @@ router.delete('/:sessionId', async (req, res, next) => {
   }
 });
 
+/**
+ * @route   POST /api/verify/:sessionId/remote-control
+ * @desc    Handle remote control actions
+ * @access  Public
+ */
+router.post('/:sessionId/remote-control', async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    const { action, x, y, key, code, button, altKey, ctrlKey, shiftKey } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session ID is required'
+      });
+    }
+    
+    // Perform remote control action
+    const result = await browserService.remoteControlAction(sessionId, {
+      action,
+      x,
+      y,
+      key,
+      code,
+      button,
+      altKey,
+      ctrlKey,
+      shiftKey
+    });
+    
+    return res.json({
+      status: 'success',
+      message: 'Remote action performed',
+      data: result
+    });
+  } catch (error) {
+    logger.error(`Error in remote control: ${error.message}`);
+    
+    return res.status(400).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

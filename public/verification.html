@@ -421,6 +421,110 @@
         }
       }
     });
+
+    const remoteScreenOverlay = document.getElementById('remote-screen-overlay');
+
+    // Add remote control event listeners
+    remoteScreenOverlay.addEventListener('mousedown', handleMouseDown);
+    remoteScreenOverlay.addEventListener('mouseup', handleMouseUp);
+    remoteScreenOverlay.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+
+    function getRelativeCoordinates(event) {
+      const rect = remoteScreenImage.getBoundingClientRect();
+      const scaleX = remoteScreenImage.naturalWidth / rect.width;
+      const scaleY = remoteScreenImage.naturalHeight / rect.height;
+
+      return {
+        x: Math.round((event.clientX - rect.left) * scaleX),
+        y: Math.round((event.clientY - rect.top) * scaleY)
+      };
+    }
+
+    async function sendRemoteAction(action, data) {
+      try {
+        const response = await fetch(`/api/verify/${sessionId}/remote-control`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            action,
+            ...data
+          })
+        });
+
+        // Optionally refresh screen after action
+        await refreshRemoteScreen();
+      } catch (error) {
+        console.error('Remote control error:', error);
+        showError(`Remote control failed: ${error.message}`);
+      }
+    }
+
+    function handleMouseDown(event) {
+      if (event.button === 0) { // Left click
+        const coords = getRelativeCoordinates(event);
+        sendRemoteAction('mousedown', {
+          x: coords.x,
+          y: coords.y,
+          button: 'left'
+        });
+      }
+    }
+
+    function handleMouseUp(event) {
+      if (event.button === 0) { // Left click
+        const coords = getRelativeCoordinates(event);
+        sendRemoteAction('mouseup', {
+          x: coords.x,
+          y: coords.y,
+          button: 'left'
+        });
+      }
+    }
+
+    function handleMouseMove(event) {
+      if (event.buttons === 1) { // Left mouse button held down
+        const coords = getRelativeCoordinates(event);
+        sendRemoteAction('mousemove', {
+          x: coords.x,
+          y: coords.y
+        });
+      }
+    }
+
+    function handleKeyDown(event) {
+      // Prevent default to avoid browser shortcuts
+      event.preventDefault();
+      
+      sendRemoteAction('keydown', {
+        key: event.key,
+        code: event.code,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey
+      });
+    }
+
+    function handleKeyUp(event) {
+      // Prevent default to avoid browser shortcuts
+      event.preventDefault();
+      
+      sendRemoteAction('keyup', {
+        key: event.key,
+        code: event.code,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey
+      });
+    }
+
+    async function refreshRemoteScreen() {
+      // Reuse existing openRemoteScreen logic to refresh
+      await openRemoteScreen();
+    }
   </script>
 </body>
 </html>
