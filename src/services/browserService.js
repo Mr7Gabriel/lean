@@ -7,13 +7,16 @@ const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const { promisify } = require('util');
+const rimraf = promisify(require('rimraf'));
 
 class BrowserService {
   constructor() {
-    this.driver = null;
+    this.drivers = {};  // Map to store multiple driver instances
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
     this.activeSessions = {};
+    this.userDataDirs = new Set(); // Track active user data directories
     
     // Create necessary directories
     if (!fs.existsSync(this.downloadPath)) {
@@ -26,25 +29,45 @@ class BrowserService {
   }
 
   /**
+   * Generate a truly unique directory name
+   * @param {string} prefix - Prefix for directory name
+   * @returns {string} - Unique directory path
+   * @private
+   */
+  _generateUniqueDir(prefix) {
+    // Use timestamp + random bytes to ensure uniqueness
+    const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+    const dirPath = path.join(os.tmpdir(), `${prefix}-${uniqueId}`);
+    
+    // Add to tracked directories
+    this.userDataDirs.add(dirPath);
+    
+    return dirPath;
+  }
+
+  /**
    * Initialize WebDriver with headless mode
+   * @param {string} instanceId - Unique ID for this driver instance
+   * @param {boolean} headless - Whether to run in headless mode
    * @returns {Promise<WebDriver>} Selenium WebDriver instance
    */
-  async initDriver(headless = true) {
-    if (this.driver) {
-      return this.driver;
+  async initDriver(instanceId = 'default', headless = true) {
+    // Close existing driver with this ID if it exists
+    if (this.drivers[instanceId]) {
+      await this.closeDriver(instanceId);
     }
 
     try {
       // Generate random user agent
       const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
       
-      // Use a unique user data directory with timestamp
-      const userDataDir = path.join(os.tmpdir(), `chrome-headless-${Date.now()}`);
+      // Use a unique user data directory
+      const userDataDir = this._generateUniqueDir('chrome-data');
       
       // Set Chrome options
       const options = new chrome.Options();
       if (headless) {
-        options.addArguments('--headless');
+        options.addArguments('--headless=new');
       }
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
@@ -66,46 +89,100 @@ class BrowserService {
       });
       
       // Add custom ChromeDriver path if specified
+      let service = null;
       if (config.selenium.chromeDriverPath) {
-        const service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
-        chrome.setDefaultService(service);
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
       }
       
       // Build WebDriver
-      this.driver = await new Builder()
+      const driver = await new Builder()
         .forBrowser('chrome')
         .setChromeOptions(options)
+        .setChromeService(service)
         .build();
       
+      // Store driver and its data directory
+      this.drivers[instanceId] = {
+        driver: driver,
+        userDataDir: userDataDir
+      };
+      
       // Set timeouts
-      await this.driver.manage().setTimeouts({
+      await driver.manage().setTimeouts({
         implicit: 10000,
         pageLoad: 30000,
         script: 30000
       });
       
-      logger.info('Selenium WebDriver initialized successfully');
-      return this.driver;
+      logger.info(`Selenium WebDriver initialized successfully for instance ${instanceId}`);
+      return driver;
     } catch (error) {
+      // Clean up directory if driver creation failed
+      const userDataDir = this.drivers[instanceId]?.userDataDir;
+      if (userDataDir) {
+        this.userDataDirs.delete(userDataDir);
+        await this._cleanupDirectory(userDataDir);
+      }
+      
+      // Remove failed driver entry
+      delete this.drivers[instanceId];
+      
       logger.error(`Error initializing WebDriver: ${error.message}`);
       throw error;
     }
   }
 
   /**
+   * Clean up a directory safely
+   * @param {string} dirPath - Directory to clean up
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _cleanupDirectory(dirPath) {
+    try {
+      if (dirPath && fs.existsSync(dirPath)) {
+        await rimraf(dirPath);
+        logger.info(`Cleaned up directory: ${dirPath}`);
+      }
+    } catch (error) {
+      logger.warn(`Error cleaning up directory ${dirPath}: ${error.message}`);
+    }
+  }
+
+  /**
    * Close WebDriver
+   * @param {string} instanceId - ID of driver to close
    * @returns {Promise<void>}
    */
-  async closeDriver() {
-    if (this.driver) {
+  async closeDriver(instanceId = 'default') {
+    const driverInfo = this.drivers[instanceId];
+    if (driverInfo && driverInfo.driver) {
       try {
-        await this.driver.quit();
-        this.driver = null;
-        logger.info('WebDriver closed successfully');
+        await driverInfo.driver.quit();
+        logger.info(`WebDriver ${instanceId} closed successfully`);
       } catch (error) {
-        logger.error(`Error closing WebDriver: ${error.message}`);
+        logger.error(`Error closing WebDriver ${instanceId}: ${error.message}`);
+      } finally {
+        // Always clean up the directory and remove from tracking
+        if (driverInfo.userDataDir) {
+          this.userDataDirs.delete(driverInfo.userDataDir);
+          await this._cleanupDirectory(driverInfo.userDataDir);
+        }
+        delete this.drivers[instanceId];
       }
     }
+  }
+
+  /**
+   * Close all WebDriver instances
+   * @returns {Promise<void>}
+   */
+  async closeAllDrivers() {
+    const instanceIds = Object.keys(this.drivers);
+    for (const id of instanceIds) {
+      await this.closeDriver(id);
+    }
+    logger.info('All WebDrivers closed successfully');
   }
 
   /**
@@ -114,15 +191,18 @@ class BrowserService {
    * @returns {Promise<string>} HTML content
    */
   async getPage(url) {
+    // Generate a unique ID for this page request
+    const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
     try {
       // Parse domain from URL
       const domain = this._extractDomain(url);
       
-      // Try to load cookies for this domain
-      const cookiesLoaded = await this._loadCookiesForDomain(domain);
+      // Initialize WebDriver in headless mode with unique ID
+      const driver = await this.initDriver(requestId, true);
       
-      // Initialize WebDriver in headless mode
-      const driver = await this.initDriver(true);
+      // Try to load cookies for this domain
+      await this._loadCookiesForDomain(domain, requestId);
       
       logger.info(`Loading URL with Selenium: ${url}`);
       await driver.get(url);
@@ -141,37 +221,17 @@ class BrowserService {
       ) {
         logger.warn('Cloudflare verification or CAPTCHA detected!');
         
-        // If we already tried with cookies but still get verification, 
-        // we need manual intervention
-        if (cookiesLoaded) {
-          logger.warn('Cookies did not help with verification, manual intervention needed');
-          
-          // Close the headless driver
-          await this.closeDriver();
-          
-          // Launch a verification session and throw special error
-          const verificationSession = await this.launchVerificationSession(url);
-          throw {
-            message: 'Verification required',
-            verificationUrl: `/verify?session=${verificationSession.sessionId}`,
-            sessionId: verificationSession.sessionId,
-            domain: domain
-          };
-        } else {
-          logger.warn('No cookies found, will attempt manual verification');
-          
-          // Close the headless driver
-          await this.closeDriver();
-          
-          // Launch a verification session and throw special error
-          const verificationSession = await this.launchVerificationSession(url);
-          throw {
-            message: 'Verification required',
-            verificationUrl: `/verify?session=${verificationSession.sessionId}`,
-            sessionId: verificationSession.sessionId,
-            domain: domain
-          };
-        }
+        // Close the headless driver
+        await this.closeDriver(requestId);
+        
+        // Launch a verification session and throw special error
+        const verificationSession = await this.launchVerificationSession(url);
+        throw {
+          message: 'Verification required',
+          verificationUrl: `/verify?session=${verificationSession.sessionId}`,
+          sessionId: verificationSession.sessionId,
+          domain: domain
+        };
       }
       
       // If we reach here, no verification needed or cookies worked
@@ -179,10 +239,16 @@ class BrowserService {
       const html = await driver.getPageSource();
       
       // Save cookies for future use
-      await this._saveCookiesForDomain(domain);
+      await this._saveCookiesForDomain(domain, requestId);
+      
+      // Clean up driver
+      await this.closeDriver(requestId);
       
       return html;
     } catch (error) {
+      // Clean up driver
+      await this.closeDriver(requestId);
+      
       // If it's our special verification error, propagate it
       if (error.verificationUrl) {
         throw error;
@@ -200,8 +266,10 @@ class BrowserService {
    * @returns {Promise<string>} Path to downloaded image
    */
   async downloadImage(imageUrl, outputPath) {
+    const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    
     try {
-      const driver = await this.initDriver();
+      const driver = await this.initDriver(downloadId, true);
       
       // Navigate to image URL
       await driver.get(imageUrl);
@@ -214,8 +282,15 @@ class BrowserService {
       await imgElement.takeScreenshot(outputPath);
       
       logger.info(`Image downloaded successfully to: ${outputPath}`);
+      
+      // Clean up driver
+      await this.closeDriver(downloadId);
+      
       return outputPath;
     } catch (error) {
+      // Clean up driver
+      await this.closeDriver(downloadId);
+      
       logger.error(`Error downloading image: ${error.message}`);
       throw error;
     }
@@ -256,15 +331,17 @@ class BrowserService {
   /**
    * Save cookies for specific domain
    * @param {string} domain - Domain to save cookies for
+   * @param {string} instanceId - WebDriver instance ID
    * @returns {Promise<boolean>} Success status
    * @private
    */
-  async _saveCookiesForDomain(domain) {
-    if (!this.driver || !domain) return false;
+  async _saveCookiesForDomain(domain, instanceId = 'default') {
+    const driverInfo = this.drivers[instanceId];
+    if (!driverInfo || !driverInfo.driver || !domain) return false;
     
     try {
       // Get cookies from the current session
-      const cookies = await this.driver.manage().getCookies();
+      const cookies = await driverInfo.driver.manage().getCookies();
       
       if (!cookies || cookies.length === 0) {
         logger.warn(`No cookies found for domain: ${domain}`);
@@ -286,11 +363,13 @@ class BrowserService {
   /**
    * Load cookies for specific domain
    * @param {string} domain - Domain to load cookies for
+   * @param {string} instanceId - WebDriver instance ID
    * @returns {Promise<boolean>} Success status
    * @private
    */
-  async _loadCookiesForDomain(domain) {
-    if (!this.driver || !domain) return false;
+  async _loadCookiesForDomain(domain, instanceId = 'default') {
+    const driverInfo = this.drivers[instanceId];
+    if (!driverInfo || !driverInfo.driver || !domain) return false;
     
     try {
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
@@ -311,7 +390,7 @@ class BrowserService {
       }
       
       // First navigate to the domain to ensure cookies can be set
-      await this.driver.get(`https://${domain}`);
+      await driverInfo.driver.get(`https://${domain}`);
       
       // Add each cookie to the driver
       for (const cookie of cookies) {
@@ -321,7 +400,7 @@ class BrowserService {
           delete cookie.storeId;
           
           // Add the cookie
-          await this.driver.manage().addCookie(cookie);
+          await driverInfo.driver.manage().addCookie(cookie);
         } catch (err) {
           logger.warn(`Failed to add cookie: ${err.message}`);
         }
@@ -346,7 +425,7 @@ class BrowserService {
       const sessionId = this._generateSessionId();
       
       // Create unique user data directory for this session
-      const userDataDir = path.join(os.tmpdir(), `chrome-verification-${Date.now()}-${sessionId}`);
+      const userDataDir = this._generateUniqueDir('chrome-verification');
       
       // Create visible browser instance (not headless)
       const options = new chrome.Options();
@@ -365,9 +444,15 @@ class BrowserService {
       });
       
       // Create a new driver instance for verification
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
       const verifyDriver = await new Builder()
         .forBrowser('chrome')
         .setChromeOptions(options)
+        .setChromeService(service)
         .build();
         
       // Set timeouts
@@ -505,16 +590,9 @@ class BrowserService {
       }
       
       // Clean up user data directory
-      if (session.userDataDir && fs.existsSync(session.userDataDir)) {
-        try {
-          // Note: For production, you may want to use a more robust directory deletion
-          // like the 'rimraf' package, as fs.rmdirSync might not work for non-empty directories
-          logger.info(`Cleaning up user data directory: ${session.userDataDir}`);
-          // In production, replace this with proper directory deletion
-          // This is a placeholder for actual deletion logic
-        } catch (err) {
-          logger.warn(`Error cleaning up user data directory: ${err.message}`);
-        }
+      if (session.userDataDir) {
+        this.userDataDirs.delete(session.userDataDir);
+        await this._cleanupDirectory(session.userDataDir);
       }
       
       // Remove the session
@@ -560,4 +638,18 @@ class BrowserService {
 
 // Create a singleton instance
 const browserService = new BrowserService();
+
+// Add shutdown handler
+process.on('SIGINT', async () => {
+  logger.info('Received SIGINT signal, closing all WebDriver instances...');
+  await browserService.closeAllDrivers();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  logger.info('Received SIGTERM signal, closing all WebDriver instances...');
+  await browserService.closeAllDrivers();
+  process.exit(0);
+});
+
 module.exports = browserService;
