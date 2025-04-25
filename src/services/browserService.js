@@ -1,6 +1,4 @@
-const { Builder, By, until } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
-const UserAgent = require('user-agents');
+const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
 const config = require('../config');
@@ -10,7 +8,7 @@ const { execSync } = require('child_process');
 
 class BrowserService {
   constructor() {
-    this.drivers = {};  // Map to store multiple driver instances
+    this.browsers = {};  // Map to store browser instances
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
     this.activeSessions = {};
@@ -29,146 +27,105 @@ class BrowserService {
   }
 
   /**
-   * Kill any hanging Chrome or chromedriver processes
+   * Kill any hanging Chrome processes
    * @private
    */
   _killChrome() {
     try {
-      // This is platform-dependent, but worth trying
       if (process.platform === 'linux') {
         execSync('pkill -f chrome', { stdio: 'ignore' });
-        execSync('pkill -f chromedriver', { stdio: 'ignore' });
+        execSync('pkill -f chromium', { stdio: 'ignore' });
       } else if (process.platform === 'win32') {
         execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
-        execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
       } else if (process.platform === 'darwin') {
-        execSync('pkill -f Google\\ Chrome', { stdio: 'ignore' });
-        execSync('pkill -f chromedriver', { stdio: 'ignore' });
+        execSync('pkill -f "Google Chrome"', { stdio: 'ignore' });
       }
       logger.info('Killed any hanging Chrome processes');
     } catch (error) {
-      // It's okay if this fails, it means no processes were found
       logger.info('No hanging Chrome processes found to kill');
     }
   }
 
   /**
-   * Initialize WebDriver with headless mode
-   * @param {string} instanceId - Unique ID for this driver instance
+   * Initialize a headless browser
+   * @param {string} instanceId - Unique ID for this browser instance
    * @param {boolean} headless - Whether to run in headless mode
-   * @returns {Promise<WebDriver>} Selenium WebDriver instance
+   * @returns {Promise<Browser>} Puppeteer Browser instance
    */
-  async initDriver(instanceId = 'default', headless = true) {
-    // Close existing driver with this ID if it exists
-    if (this.drivers[instanceId]) {
-      await this.closeDriver(instanceId);
+  async initBrowser(instanceId = 'default', headless = true) {
+    // Close existing browser with this ID if it exists
+    if (this.browsers[instanceId]) {
+      await this.closeBrowser(instanceId);
     }
 
     try {
-      // Generate random user agent
-      const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
-      
-      // Set Chrome options - USING INCOGNITO MODE to avoid profile issues
-      const options = new chrome.Options();
-      if (headless) {
-        options.addArguments('--headless=new');
-      }
-      options.addArguments('--incognito');  // Run in incognito mode
-      options.addArguments('--no-sandbox');
-      options.addArguments('--disable-dev-shm-usage');
-      options.addArguments('--disable-gpu');
-      options.addArguments('--window-size=1920,1080');
-      options.addArguments(`--user-agent=${userAgent}`);
-      options.addArguments('--disable-extensions');
-      options.addArguments('--disable-web-security');
-      options.addArguments('--ignore-certificate-errors');
-      options.addArguments('--allow-insecure-localhost');
-      options.addArguments('--disable-application-cache');
-      options.addArguments('--disable-infobars');
-      options.addArguments('--test-type');
-      
-      // Set download preferences for headless Chrome
-      options.setUserPreferences({
-        'download.default_directory': this.downloadPath,
-        'download.prompt_for_download': false,
-        'download.directory_upgrade': true,
-        'safebrowsing.enabled': false
+      // Launch browser with Puppeteer
+      const browser = await puppeteer.launch({
+        headless: headless ? 'new' : false,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--window-size=1920,1080',
+        ],
+        ignoreHTTPSErrors: true,
+        defaultViewport: {
+          width: 1920,
+          height: 1080
+        },
+        handleSIGINT: false, // We'll handle process signals ourselves
+        handleSIGTERM: false,
+        handleSIGHUP: false
       });
       
-      // Set Chrome binary path if provided
-      if (config.selenium.chromeBinaryPath) {
-        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
-      }
-      
-      // Add custom ChromeDriver path if specified
-      let service = null;
-      if (config.selenium.chromeDriverPath) {
-        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
-      }
-      
-      // Build WebDriver
-      const driver = await new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options)
-        .setChromeService(service)
-        .build();
-      
-      // Store driver
-      this.drivers[instanceId] = {
-        driver: driver
+      // Store browser instance
+      this.browsers[instanceId] = {
+        browser,
+        pages: {}
       };
       
-      // Set timeouts
-      await driver.manage().setTimeouts({
-        implicit: 10000,
-        pageLoad: 30000,
-        script: 30000
-      });
-      
-      logger.info(`Selenium WebDriver initialized successfully for instance ${instanceId}`);
-      return driver;
+      logger.info(`Puppeteer browser initialized successfully for instance ${instanceId}`);
+      return browser;
     } catch (error) {
-      // Remove failed driver entry
-      delete this.drivers[instanceId];
+      // Clean up failed instance
+      delete this.browsers[instanceId];
       
-      logger.error(`Error initializing WebDriver: ${error.message}`);
+      logger.error(`Error initializing browser: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * Close WebDriver
-   * @param {string} instanceId - ID of driver to close
+   * Close browser instance
+   * @param {string} instanceId - ID of browser to close
    * @returns {Promise<void>}
    */
-  async closeDriver(instanceId = 'default') {
-    const driverInfo = this.drivers[instanceId];
-    if (driverInfo && driverInfo.driver) {
+  async closeBrowser(instanceId = 'default') {
+    const browserInfo = this.browsers[instanceId];
+    if (browserInfo && browserInfo.browser) {
       try {
-        await driverInfo.driver.quit();
-        logger.info(`WebDriver ${instanceId} closed successfully`);
+        await browserInfo.browser.close();
+        logger.info(`Browser ${instanceId} closed successfully`);
       } catch (error) {
-        logger.error(`Error closing WebDriver ${instanceId}: ${error.message}`);
+        logger.error(`Error closing browser ${instanceId}: ${error.message}`);
       } finally {
-        delete this.drivers[instanceId];
+        delete this.browsers[instanceId];
       }
     }
   }
 
   /**
-   * Close all WebDriver instances
+   * Close all browser instances
    * @returns {Promise<void>}
    */
-  async closeAllDrivers() {
-    const instanceIds = Object.keys(this.drivers);
+  async closeAllBrowsers() {
+    const instanceIds = Object.keys(this.browsers);
     for (const id of instanceIds) {
-      await this.closeDriver(id);
+      await this.closeBrowser(id);
     }
-    
-    // Also kill any hanging Chrome processes
-    this._killChrome();
-    
-    logger.info('All WebDrivers closed successfully');
+    logger.info('All browsers closed successfully');
   }
 
   /**
@@ -184,31 +141,52 @@ class BrowserService {
       // Parse domain from URL
       const domain = this._extractDomain(url);
       
-      // Initialize WebDriver in headless mode with unique ID
-      const driver = await this.initDriver(requestId, true);
+      // Initialize browser in headless mode with unique ID
+      const browser = await this.initBrowser(requestId, true);
+      
+      // Create a new page
+      const page = await browser.newPage();
+      
+      // Set user agent
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36');
       
       // Try to load cookies for this domain
-      await this._loadCookiesForDomain(domain, requestId);
+      await this._loadCookiesForDomain(domain, page);
       
-      logger.info(`Loading URL with Selenium: ${url}`);
-      await driver.get(url);
+      // Configure request interception for better handling of resources
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        // Skip loading unnecessary resources
+        if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) {
+          request.continue();
+        } else {
+          request.continue();
+        }
+      });
       
-      // Wait for page to load
-      await driver.wait(until.elementLocated(By.tagName('body')), 20000);
+      logger.info(`Loading URL with Puppeteer: ${url}`);
       
-      // Check if page has Cloudflare challenge or other verification
-      const pageSource = await driver.getPageSource();
+      // Navigate to the URL with a timeout
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+      
+      // Wait for body to be present
+      await page.waitForSelector('body', { timeout: 10000 });
+      
+      // Check for Cloudflare challenge or CAPTCHA
+      const pageContent = await page.content();
       
       if (
-        pageSource.includes('Verify you are human') || 
-        (pageSource.includes('cloudflare') &&
-        pageSource.includes('challenge')) ||
-        pageSource.includes('captcha')
+        pageContent.includes('Verify you are human') || 
+        (pageContent.includes('cloudflare') && pageContent.includes('challenge')) ||
+        pageContent.includes('captcha')
       ) {
         logger.warn('Cloudflare verification or CAPTCHA detected!');
         
-        // Close the headless driver
-        await this.closeDriver(requestId);
+        // Close the headless browser
+        await this.closeBrowser(requestId);
         
         // Launch a verification session and throw special error
         const verificationSession = await this.launchVerificationSession(url);
@@ -220,20 +198,19 @@ class BrowserService {
         };
       }
       
-      // If we reach here, no verification needed or cookies worked
-      // Get the page source
-      const html = await driver.getPageSource();
+      // Get the page content
+      const html = await page.content();
       
       // Save cookies for future use
-      await this._saveCookiesForDomain(domain, requestId);
+      await this._saveCookiesForDomain(domain, page);
       
-      // Clean up driver
-      await this.closeDriver(requestId);
+      // Close the browser
+      await this.closeBrowser(requestId);
       
       return html;
     } catch (error) {
-      // Clean up driver
-      await this.closeDriver(requestId);
+      // Clean up browser
+      await this.closeBrowser(requestId);
       
       // If it's our special verification error, propagate it
       if (error.verificationUrl) {
@@ -246,7 +223,7 @@ class BrowserService {
   }
 
   /**
-   * Download image using WebDriver
+   * Download image using Puppeteer
    * @param {string} imageUrl - Image URL to download
    * @param {string} outputPath - Path to save image
    * @returns {Promise<string>} Path to downloaded image
@@ -255,27 +232,33 @@ class BrowserService {
     const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
     try {
-      const driver = await this.initDriver(downloadId, true);
+      const browser = await this.initBrowser(downloadId, true);
+      const page = await browser.newPage();
       
       // Navigate to image URL
-      await driver.get(imageUrl);
-      await driver.sleep(2000);
+      await page.goto(imageUrl, { waitUntil: 'networkidle2', timeout: 30000 });
       
-      // Find the image element
-      const imgElement = await driver.findElement(By.tagName('img'));
+      // Wait for the image to load
+      await page.waitForSelector('img', { timeout: 10000 });
       
-      // Take screenshot of the image
-      await imgElement.takeScreenshot(outputPath);
+      // Take a screenshot of the image
+      const imgElement = await page.$('img');
+      if (imgElement) {
+        await imgElement.screenshot({ path: outputPath });
+      } else {
+        // If no image found, take screenshot of the entire page
+        await page.screenshot({ path: outputPath });
+      }
       
       logger.info(`Image downloaded successfully to: ${outputPath}`);
       
-      // Clean up driver
-      await this.closeDriver(downloadId);
+      // Close the browser
+      await this.closeBrowser(downloadId);
       
       return outputPath;
     } catch (error) {
-      // Clean up driver
-      await this.closeDriver(downloadId);
+      // Clean up browser
+      await this.closeBrowser(downloadId);
       
       logger.error(`Error downloading image: ${error.message}`);
       throw error;
@@ -317,17 +300,16 @@ class BrowserService {
   /**
    * Save cookies for specific domain
    * @param {string} domain - Domain to save cookies for
-   * @param {string} instanceId - WebDriver instance ID
+   * @param {Page} page - Puppeteer Page instance
    * @returns {Promise<boolean>} Success status
    * @private
    */
-  async _saveCookiesForDomain(domain, instanceId = 'default') {
-    const driverInfo = this.drivers[instanceId];
-    if (!driverInfo || !driverInfo.driver || !domain) return false;
+  async _saveCookiesForDomain(domain, page) {
+    if (!page || !domain) return false;
     
     try {
-      // Get cookies from the current session
-      const cookies = await driverInfo.driver.manage().getCookies();
+      // Get cookies from the current page
+      const cookies = await page.cookies();
       
       if (!cookies || cookies.length === 0) {
         logger.warn(`No cookies found for domain: ${domain}`);
@@ -349,13 +331,12 @@ class BrowserService {
   /**
    * Load cookies for specific domain
    * @param {string} domain - Domain to load cookies for
-   * @param {string} instanceId - WebDriver instance ID
+   * @param {Page} page - Puppeteer Page instance
    * @returns {Promise<boolean>} Success status
    * @private
    */
-  async _loadCookiesForDomain(domain, instanceId = 'default') {
-    const driverInfo = this.drivers[instanceId];
-    if (!driverInfo || !driverInfo.driver || !domain) return false;
+  async _loadCookiesForDomain(domain, page) {
+    if (!page || !domain) return false;
     
     try {
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
@@ -375,22 +356,8 @@ class BrowserService {
         return false;
       }
       
-      // First navigate to the domain to ensure cookies can be set
-      await driverInfo.driver.get(`https://${domain}`);
-      
-      // Add each cookie to the driver
-      for (const cookie of cookies) {
-        try {
-          // Remove extra properties not supported by Selenium
-          delete cookie.sameSite;
-          delete cookie.storeId;
-          
-          // Add the cookie
-          await driverInfo.driver.manage().addCookie(cookie);
-        } catch (err) {
-          logger.warn(`Failed to add cookie: ${err.message}`);
-        }
-      }
+      // Set cookies
+      await page.setCookie(...cookies);
       
       logger.info(`Loaded ${cookies.length} cookies for domain: ${domain}`);
       return true;
@@ -407,62 +374,37 @@ class BrowserService {
    */
   async launchVerificationSession(url) {
     try {
-      // Make sure there are no hanging Chrome processes
-      this._killChrome();
-      
       // Generate a session ID
       const sessionId = this._generateSessionId();
       
-      // Create visible browser instance (not headless)
-      const options = new chrome.Options();
-      options.addArguments('--no-sandbox');
-      options.addArguments('--disable-dev-shm-usage');
-      options.addArguments('--disable-gpu');
-      options.addArguments('--window-size=1280,800');
-      options.addArguments('--disable-extensions');
-      // No incognito mode for verification sessions as we need to keep cookies
-      
-      // Configure download directory
-      options.setUserPreferences({
-        'download.default_directory': this.downloadPath,
-        'download.prompt_for_download': false,
-        'download.directory_upgrade': true,
-        'safebrowsing.enabled': false
+      // Launch a non-headless browser for verification
+      const browser = await puppeteer.launch({
+        headless: false,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--window-size=1280,800'
+        ],
+        defaultViewport: null // Use the full browser window
       });
       
-      // Set Chrome binary path if provided
-      if (config.selenium.chromeBinaryPath) {
-        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
-      }
+      // Create a new page
+      const page = await browser.newPage();
       
-      // Create a new driver instance for verification
-      let service = null;
-      if (config.selenium.chromeDriverPath) {
-        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
-      }
+      // Set user agent
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36');
       
-      const verifyDriver = await new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options)
-        .setChromeService(service)
-        .build();
-        
-      // Set timeouts
-      await verifyDriver.manage().setTimeouts({
-        implicit: 10000,
-        pageLoad: 30000,
-        script: 30000
-      });
-      
-      // Navigate to the URL
-      await verifyDriver.get(url);
+      // Navigate to URL
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       // Extract domain
       const domain = this._extractDomain(url);
       
       // Store session information
       this.activeSessions[sessionId] = {
-        driver: verifyDriver,
+        browser,
+        page,
         url: url,
         domain: domain,
         startTime: Date.now(),
@@ -531,7 +473,7 @@ class BrowserService {
       const session = this.activeSessions[sessionId];
       
       // Save cookies from verification session
-      const cookies = await session.driver.manage().getCookies();
+      const cookies = await session.page.cookies();
       
       if (!cookies || cookies.length === 0) {
         throw new Error('No cookies found in verification session');
@@ -573,11 +515,11 @@ class BrowserService {
       
       const session = this.activeSessions[sessionId];
       
-      // Quit the driver
+      // Close the browser
       try {
-        await session.driver.quit();
+        await session.browser.close();
       } catch (err) {
-        logger.warn(`Error closing verification driver: ${err.message}`);
+        logger.warn(`Error closing verification browser: ${err.message}`);
       }
       
       // Remove the session
@@ -626,14 +568,14 @@ const browserService = new BrowserService();
 
 // Add shutdown handler
 process.on('SIGINT', async () => {
-  logger.info('Received SIGINT signal, closing all WebDriver instances...');
-  await browserService.closeAllDrivers();
+  logger.info('Received SIGINT signal, closing all browser instances...');
+  await browserService.closeAllBrowsers();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  logger.info('Received SIGTERM signal, closing all WebDriver instances...');
-  await browserService.closeAllDrivers();
+  logger.info('Received SIGTERM signal, closing all browser instances...');
+  await browserService.closeAllBrowsers();
   process.exit(0);
 });
 
