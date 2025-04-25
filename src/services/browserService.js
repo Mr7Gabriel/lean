@@ -15,6 +15,7 @@ class BrowserService {
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
     this.activeSessions = {};
     this.xvfbProcess = null;
+    this.hasXvfb = false;
     
     // Create necessary directories
     if (!fs.existsSync(this.downloadPath)) {
@@ -579,6 +580,46 @@ class BrowserService {
       };
     } catch (error) {
       logger.error(`Error getting verification session status: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get remote view data for a verification session
+   * @param {string} sessionId - Session ID to get view for
+   * @returns {Promise<object>} Remote view data
+   */
+  async getRemoteViewData(sessionId) {
+    try {
+      // Check if session exists
+      if (!this.activeSessions[sessionId]) {
+        throw new Error(`Verification session ${sessionId} not found`);
+      }
+      
+      const session = this.activeSessions[sessionId];
+      
+      // Check if session has expired
+      if (Date.now() > session.expiresAt) {
+        await this.closeVerificationSession(sessionId);
+        throw new Error(`Verification session ${sessionId} has expired`);
+      }
+      
+      // Take screenshot of the current browser session
+      const driver = session.driver;
+      const screenshot = await driver.takeScreenshot();
+      
+      // Return screenshot as data URL
+      return {
+        sessionId,
+        screenshot: `data:image/png;base64,${screenshot}`,
+        url: session.url,
+        domain: session.domain,
+        startTime: session.startTime,
+        expiresAt: session.expiresAt,
+        remainingMinutes: Math.floor((session.expiresAt - Date.now()) / 60000)
+      };
+    } catch (error) {
+      logger.error(`Error getting remote view data: ${error.message}`);
       throw error;
     }
   }

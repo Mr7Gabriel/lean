@@ -24,10 +24,46 @@ router.get('/:sessionId', async (req, res, next) => {
     
     return res.json({
       status: 'success',
-      data: sessionStatus
+      data: {
+        ...sessionStatus,
+        remoteViewUrl: `/api/verify/${sessionId}/view`  // New route for remote view
+      }
     });
   } catch (error) {
     logger.error(`Error getting verification session: ${error.message}`);
+    
+    return res.status(404).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * @route   GET /api/verify/:sessionId/view
+ * @desc    Get remote view of verification session
+ * @access  Public
+ */
+router.get('/:sessionId/view', async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessionId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session ID is required'
+      });
+    }
+    
+    const sessionStatus = await browserService.getRemoteViewData(sessionId);
+    
+    // Return remote view data
+    res.json({
+      status: 'success',
+      data: sessionStatus
+    });
+  } catch (error) {
+    logger.error(`Error getting remote view: ${error.message}`);
     
     return res.status(404).json({
       status: 'error',
