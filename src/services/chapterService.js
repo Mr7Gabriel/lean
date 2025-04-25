@@ -47,7 +47,25 @@ class ChapterService {
       }
       
       // Scrape chapter data
-      const chapterData = await scraper.scrapeChapter(url);
+      let chapterData;
+      try {
+        chapterData = await scraper.scrapeChapter(url);
+      } catch (error) {
+        // Check if verification is required
+        if (error.verificationUrl || error.sessionId) {
+          const domain = error.domain || this._extractDomain(url);
+          return {
+            status: 'verification_required',
+            message: `Verification required for site: ${domain}`,
+            data: {
+              verificationUrl: error.verificationUrl,
+              sessionId: error.sessionId || '',
+              domain: domain
+            }
+          };
+        }
+        throw error;
+      }
       
       if (!chapterData) {
         return {
@@ -262,6 +280,28 @@ class ChapterService {
     };
     
     return contentTypes[fileExt.toLowerCase()] || 'image/jpeg';
+  }
+
+  /**
+   * Extract domain from URL
+   * @param {string} url - URL to extract domain from
+   * @returns {string} Domain name
+   * @private
+   */
+  _extractDomain(url) {
+    try {
+      const parsedUrl = new URL(url);
+      let domain = parsedUrl.hostname;
+      
+      // Remove 'www.' prefix if present
+      if (domain.startsWith('www.')) {
+        domain = domain.substring(4);
+      }
+      
+      return domain;
+    } catch (e) {
+      return '';
+    }
   }
 }
 

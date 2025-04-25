@@ -251,14 +251,15 @@ class ScraperAdapter {
         mangaData = await scraper.scrape(url);
       } catch (error) {
         // Check if this is a verification required error
-        if (error.verificationUrl) {
+        if (error.verificationUrl || error.sessionId) {
+          const domain = error.domain || this._extractDomain(url);
           return {
             status: 'verification_required',
-            message: `Verification required for site: ${error.domain || 'unknown'}`,
+            message: `Verification required for site: ${domain}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId,
-              domain: error.domain
+              sessionId: error.sessionId || '',
+              domain: domain
             }
           };
         }
@@ -312,14 +313,15 @@ class ScraperAdapter {
         chapterData = await scraper.scrapeChapter(url);
       } catch (error) {
         // Check if this is a verification required error
-        if (error.verificationUrl) {
+        if (error.verificationUrl || error.sessionId) {
+          const domain = error.domain || this._extractDomain(url);
           return {
             status: 'verification_required',
-            message: `Verification required for site: ${error.domain || 'unknown'}`,
+            message: `Verification required for site: ${domain}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId,
-              domain: error.domain
+              sessionId: error.sessionId || '',
+              domain: domain
             }
           };
         }
@@ -374,14 +376,15 @@ class ScraperAdapter {
         coverPath = await scraper.downloadCover(url, mangaTitle);
       } catch (error) {
         // Check if this is a verification required error
-        if (error.verificationUrl) {
+        if (error.verificationUrl || error.sessionId) {
+          const domain = error.domain || this._extractDomain(url);
           return {
             status: 'verification_required',
-            message: `Verification required for site: ${error.domain || 'unknown'}`,
+            message: `Verification required for site: ${domain}`,
             data: {
               verificationUrl: error.verificationUrl,
-              sessionId: error.sessionId,
-              domain: error.domain
+              sessionId: error.sessionId || '',
+              domain: domain
             }
           };
         }
@@ -491,9 +494,9 @@ class ScraperAdapter {
    * Extract domain from URL
    * @param {string} url - URL to extract domain from
    * @returns {string} Domain name
-   * @static
+   * @private
    */
-  static getDomainFromUrl(url) {
+  _extractDomain(url) {
     try {
       const parsedUrl = new URL(url);
       let domain = parsedUrl.hostname;

@@ -6,6 +6,7 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 const browserService = require('./services/browserService');
+const cookieRoutes = require('./routes/cookie.routes');
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -33,10 +34,16 @@ app.use('/api', chapterRoutes);
 app.use('/api', userRoutes);
 app.use('/api/scraper', scraperRoutes);
 app.use('/api/verify', verificationRoutes);
+app.use('/api/cookies', cookieRoutes);
 
 // Route for verification page
 app.get('/verify', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/verification.html'));
+});
+
+// Route for Cookies
+app.get('/cookies', (req, res) => {
+  res.sendFile(path.join(__dirname, '../public/cookie-manager.html'));
 });
 
 // Root route

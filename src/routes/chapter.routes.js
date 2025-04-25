@@ -42,6 +42,7 @@ router.get('/chapter', [
     // Scrape chapter data
     const result = await chapterService.scrapeChapter(url);
     
+    // Return the result directly without additional processing
     return res.json(result);
   } catch (error) {
     next(error);

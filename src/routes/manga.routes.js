@@ -45,6 +45,7 @@ router.get('/manga', [
     // Scrape manga data
     const result = await scraperAdapter.scrapeManga(url);
     
+    // Return the result directly without additional processing
     return res.json(result);
   } catch (error) {
     next(error);

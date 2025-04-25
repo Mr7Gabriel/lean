@@ -207,7 +207,7 @@ class BrowserService {
         if (driverInfo.tempDir && fs.existsSync(driverInfo.tempDir)) {
           try {
             // Simple cleanup of directory (non-recursive)
-            fs.rmdirSync(driverInfo.tempDir, { recursive: true });
+            fs.rmSync(driverInfo.tempDir, { recursive: true, force: true });
           } catch (cleanupError) {
             logger.warn(`Could not clean up temp directory: ${cleanupError.message}`);
           }
@@ -277,6 +277,8 @@ class BrowserService {
         
         // Launch a verification session and throw special error
         const verificationSession = await this.launchVerificationSession(url);
+        
+        // Format error object correctly with all required properties
         throw {
           message: 'Verification required',
           verificationUrl: `/verify?session=${verificationSession.sessionId}`,
@@ -648,7 +650,7 @@ class BrowserService {
       // Clean up temp directory
       if (session.tempDir && fs.existsSync(session.tempDir)) {
         try {
-          fs.rmdirSync(session.tempDir, { recursive: true });
+          fs.rmSync(session.tempDir, { recursive: true, force: true });
         } catch (cleanupError) {
           logger.warn(`Could not clean up temp directory: ${cleanupError.message}`);
         }
