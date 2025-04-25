@@ -170,11 +170,34 @@ class BrowserService {
         return false;
       }
       
+      // Process cookies to ensure proper formatting
+      const processedCookies = cookies.map(cookie => {
+        const processedCookie = { ...cookie };
+        
+        // Ensure Cloudflare cookies have correct domain format
+        if (cookie.name && (
+          cookie.name.startsWith('cf_') || 
+          cookie.name.includes('cloudflare') ||
+          cookie.name.startsWith('__cf'))) {
+            
+          // Ensure domain begins with dot for subdomain matching
+          if (processedCookie.domain && !processedCookie.domain.startsWith('.')) {
+            processedCookie.domain = '.' + processedCookie.domain;
+          }
+          
+          // Set required flags for Cloudflare cookies
+          processedCookie.httpOnly = true;
+          processedCookie.secure = true;
+        }
+        
+        return processedCookie;
+      });
+      
       // Save cookies to file
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
-      fs.writeFileSync(cookieFile, JSON.stringify(cookies, null, 2));
+      fs.writeFileSync(cookieFile, JSON.stringify(processedCookies, null, 2));
       
-      logger.info(`Saved ${cookies.length} cookies for domain: ${domain}`);
+      logger.info(`Saved ${processedCookies.length} cookies for domain: ${domain}`);
       return true;
     } catch (error) {
       logger.error(`Error saving cookies for domain ${domain}: ${error.message}`);
@@ -214,22 +237,47 @@ class BrowserService {
       // First navigate to the domain to ensure cookies can be set
       await driverInfo.driver.get(`https://${domain}`);
       
+      // Wait for page to be ready
+      await driverInfo.driver.sleep(500);
+      
       // Add each cookie to the driver
+      let addedCount = 0;
+      
       for (const cookie of cookies) {
         try {
-          // Remove extra properties not supported by Selenium
-          delete cookie.sameSite;
-          delete cookie.storeId;
+          // Create a clean cookie object with only the properties Selenium accepts
+          const cleanCookie = {
+            name: cookie.name,
+            value: cookie.value,
+            domain: cookie.domain,
+            path: cookie.path || '/',
+            expiry: cookie.expiry || cookie.expires,
+            secure: cookie.secure,
+            httpOnly: cookie.httpOnly
+          };
+          
+          // Remove null/undefined properties
+          Object.keys(cleanCookie).forEach(key => {
+            if (cleanCookie[key] === undefined || cleanCookie[key] === null) {
+              delete cleanCookie[key];
+            }
+          });
           
           // Add the cookie
-          await driverInfo.driver.manage().addCookie(cookie);
+          await driverInfo.driver.manage().addCookie(cleanCookie);
+          addedCount++;
         } catch (err) {
-          logger.warn(`Failed to add cookie: ${err.message}`);
+          logger.warn(`Failed to add cookie ${cookie.name}: ${err.message}`);
         }
       }
       
-      logger.info(`Loaded ${cookies.length} cookies for domain: ${domain}`);
-      return true;
+      logger.info(`Loaded ${addedCount}/${cookies.length} cookies for domain: ${domain}`);
+      
+      // Refresh page to apply cookies
+      await driverInfo.driver.navigate().refresh();
+      await driverInfo.driver.sleep(500);
+      
+      return addedCount > 0;
     } catch (error) {
       logger.error(`Error loading cookies for domain ${domain}: ${error.message}`);
       return false;
@@ -344,6 +392,138 @@ class BrowserService {
   }
 
   /**
+   * Initialize a reinforced WebDriver that's more resistant to detection
+   * @param {string} instanceId - Unique driver instance ID
+   * @param {boolean} headless - Run in headless mode
+   * @returns {Promise<WebDriver>} Selenium WebDriver
+   */
+  async initReinforcedDriver(instanceId = 'default', headless = true) {
+    // Close existing driver if it exists
+    if (this.drivers[instanceId]) {
+      await this.closeDriver(instanceId);
+    }
+
+    try {
+      // More sophisticated user agent
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36';
+      
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
+      
+      // Common Chrome arguments
+      const commonArgs = [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        `--user-agent=${userAgent}`,
+        '--disable-extensions',
+        '--disable-blink-features=AutomationControlled', // Important for avoiding detection
+        '--disable-web-security',
+        '--ignore-certificate-errors',
+        '--allow-running-insecure-content',
+        '--disable-application-cache',
+        '--disable-infobars'
+      ];
+      
+      options.addArguments(commonArgs);
+      
+      // Additional preferences to evade detection
+      options.setUserPreferences({
+        'download.default_directory': this.downloadPath,
+        'download.prompt_for_download': false,
+        'download.directory_upgrade': true,
+        'safebrowsing.enabled': false,
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false,
+        'profile.default_content_setting_values.notifications': 2,
+        'profile.managed_default_content_settings.images': 1,
+        'profile.default_content_setting_values.cookies': 1
+      });
+      
+      // Unique temp directory
+      const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      options.addArguments(`--user-data-dir=${tempDir}`);
+      
+      // Custom Chrome binary path
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
+      
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
+      
+      // Store driver info
+      this.drivers[instanceId] = {
+        driver,
+        tempDir
+      };
+      
+      // Set timeouts
+      await driver.manage().setTimeouts({
+        implicit: 15000,
+        pageLoad: 45000,
+        script: 45000
+      });
+      
+      // Execute script to evade detection
+      await driver.executeScript(`
+        // Overwrite the navigator properties to mask selenium
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined
+        });
+        
+        // Overwrite Chrome's automation property
+        window.navigator.chrome = {
+          runtime: {}
+        };
+        
+        // Ensure document.hidden returns false
+        Object.defineProperty(document, 'hidden', {
+          get: () => false
+        });
+        
+        // Ensure document.visibilityState returns visible
+        Object.defineProperty(document, 'visibilityState', {
+          get: () => 'visible'
+        });
+        
+        // Clear the automation controller flag
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+      `);
+      
+      logger.info(`Reinforced WebDriver initialized: ${instanceId}`);
+      return driver;
+    } catch (error) {
+      delete this.drivers[instanceId];
+      logger.error(`WebDriver init error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Close specific WebDriver
    * @param {string} instanceId - Driver instance ID
    */
@@ -388,22 +568,24 @@ class BrowserService {
     
     try {
       const domain = this._extractDomain(url);
-      const driver = await this.initDriver(requestId, true);
+      const driver = await this.initReinforcedDriver(requestId, true);
       
       await this._loadCookiesForDomain(domain, requestId);
       
       logger.info(`Loading URL: ${url}`);
       await driver.get(url);
       
-      await driver.wait(until.elementLocated(By.tagName('body')), 20000);
+      // Wait for body to be present with increased timeout
+      await driver.wait(until.elementLocated(By.tagName('body')), 30000);
       
+      // Get page source and check for Cloudflare
       const pageSource = await driver.getPageSource();
       
-      // Cloudflare/bot detection
       if (
         pageSource.includes('Verify you are human') || 
         (pageSource.includes('cloudflare') && pageSource.includes('challenge')) ||
-        pageSource.includes('captcha')
+        pageSource.includes('captcha') ||
+        pageSource.includes('Please wait while we verify your browser')
       ) {
         logger.warn('Verification challenge detected!');
         
@@ -421,6 +603,7 @@ class BrowserService {
       
       const html = await driver.getPageSource();
       
+      // Save any new cookies
       await this._saveCookiesForDomain(domain, requestId);
       await this.closeDriver(requestId);
       
@@ -730,28 +913,81 @@ class BrowserService {
       }
       
       const session = this.activeSessions[sessionId];
+      const driver = session.driver;
+      const domain = session.domain;
+      
+      // Take a bit of time to ensure all cookies are set by Cloudflare
+      await driver.sleep(1000);
+      
+      // Get current URL to check if we're still on a Cloudflare page
+      const currentUrl = await driver.getCurrentUrl();
+      const pageSource = await driver.getPageSource();
+      
+      // Check for Cloudflare patterns
+      const stillOnCloudflare = 
+        currentUrl.includes('cloudflare') || 
+        pageSource.includes('Verify you are human') || 
+        pageSource.includes('Cloudflare') || 
+        pageSource.includes('challenge') ||
+        pageSource.includes('captcha') ||
+        pageSource.includes('Please wait while we verify your browser');
+      
+      if (stillOnCloudflare) {
+        logger.warn(`Verification appears incomplete, still on Cloudflare page: ${currentUrl}`);
+        return {
+          success: false,
+          message: "Verification appears incomplete. Please complete the Cloudflare challenge fully.",
+          domain: domain
+        };
+      }
       
       // Save cookies from verification session
-      const cookies = await session.driver.manage().getCookies();
+      const cookies = await driver.manage().getCookies();
       
       if (!cookies || cookies.length === 0) {
         throw new Error('No cookies found in verification session');
       }
       
-      // Save cookies to file
-      const cookieFile = path.join(this.cookiesPath, `${session.domain}.json`);
-      fs.writeFileSync(cookieFile, JSON.stringify(cookies, null, 2));
+      // Add some important metadata to each cookie
+      const processedCookies = cookies.map(cookie => {
+        const processedCookie = { ...cookie };
+        
+        // Ensure domain is properly set - sometimes it's missing and needs the dot prefix
+        if (processedCookie.domain && !processedCookie.domain.startsWith('.') && 
+            processedCookie.name && (
+              processedCookie.name.startsWith('cf_') || 
+              processedCookie.name.startsWith('__cf') || 
+              processedCookie.name.includes('cloudflare')
+            )) {
+          processedCookie.domain = '.' + processedCookie.domain;
+        }
+        
+        // Ensure httpOnly and secure are properly set for Cloudflare cookies
+        if (processedCookie.name && (
+            processedCookie.name.toLowerCase().includes('cf_') || 
+            processedCookie.name.startsWith('__cf') || 
+            processedCookie.name.includes('cloudflare'))) {
+          processedCookie.httpOnly = true;
+          processedCookie.secure = true;
+        }
+        
+        return processedCookie;
+      });
       
-      logger.info(`Saved ${cookies.length} cookies for domain: ${session.domain}`);
+      // Save cookies to file
+      const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+      fs.writeFileSync(cookieFile, JSON.stringify(processedCookies, null, 2));
+      
+      logger.info(`Saved ${processedCookies.length} cookies for domain: ${domain}`);
       
       // Close the session
       await this.closeVerificationSession(sessionId);
       
       return {
         success: true,
-        message: `Verification completed successfully for ${session.domain}`,
-        cookieCount: cookies.length,
-        domain: session.domain
+        message: `Verification completed successfully for ${domain}`,
+        cookieCount: processedCookies.length,
+        domain: domain
       };
     } catch (error) {
       logger.error(`Error completing verification session: ${error.message}`);

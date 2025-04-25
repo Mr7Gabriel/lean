@@ -74,6 +74,69 @@ router.get('/:sessionId/view', async (req, res, next) => {
 });
 
 /**
+ * @route   GET /api/verify/:sessionId/check-cloudflare
+ * @desc    Check if the current page is still a Cloudflare verification page
+ * @access  Public
+ */
+router.get('/:sessionId/check-cloudflare', async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessionId) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Session ID is required'
+      });
+    }
+    
+    // Get session
+    if (!browserService.activeSessions[sessionId]) {
+      return res.status(404).json({
+        status: 'error',
+        message: `Session ${sessionId} not found`
+      });
+    }
+    
+    const session = browserService.activeSessions[sessionId];
+    const driver = session.driver;
+    
+    // Get current URL and page source
+    const currentUrl = await driver.getCurrentUrl();
+    const pageSource = await driver.getPageSource();
+    
+    // Check for Cloudflare patterns
+    const cloudflareDetected = 
+      currentUrl.includes('cloudflare') || 
+      pageSource.includes('Verify you are human') || 
+      pageSource.includes('Cloudflare') || 
+      pageSource.includes('challenge') ||
+      pageSource.includes('captcha') ||
+      pageSource.includes('Please wait while we verify your browser');
+    
+    if (cloudflareDetected) {
+      return res.json({
+        status: 'detecting_cloudflare',
+        message: 'Cloudflare verification still in progress',
+        url: currentUrl
+      });
+    } else {
+      return res.json({
+        status: 'success',
+        message: 'No Cloudflare verification detected',
+        url: currentUrl
+      });
+    }
+  } catch (error) {
+    logger.error(`Error checking Cloudflare status: ${error.message}`);
+    
+    return res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * @route   POST /api/verify/:sessionId/complete
  * @desc    Complete verification session
  * @access  Public
@@ -92,7 +155,7 @@ router.post('/:sessionId/complete', async (req, res, next) => {
     const result = await browserService.completeVerificationSession(sessionId);
     
     return res.json({
-      status: 'success',
+      status: result.success ? 'success' : 'error',
       message: result.message,
       data: {
         cookieCount: result.cookieCount,

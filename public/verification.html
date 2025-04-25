@@ -160,6 +160,69 @@
       margin-top: 10px;
       color: #e74c3c;
     }
+
+    .verification-instructions {
+      background-color: #f9f9f9;
+      border-left: 4px solid #3498db;
+      padding: 10px 15px;
+      margin-bottom: 20px;
+    }
+
+    .verification-instructions h3 {
+      color: #2980b9;
+      margin-top: 0;
+    }
+
+    .verification-instructions li {
+      margin-bottom: 8px;
+    }
+
+    .verification-instructions .emphasis {
+      font-weight: bold;
+      color: #e74c3c;
+    }
+
+    .click-effect {
+      pointer-events: none;
+      position: absolute;
+      border-radius: 50%;
+      animation: click-animation 0.5s ease-out forwards;
+    }
+
+    @keyframes click-animation {
+      0% { transform: scale(1); opacity: 1; }
+      100% { transform: scale(2); opacity: 0; }
+    }
+
+    #status-message {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 5px;
+      text-align: center;
+    }
+
+    .button-row {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin: 15px 0;
+    }
+
+    .primary-btn {
+      background-color: #3498db;
+    }
+
+    .success-btn {
+      background-color: #2ecc71;
+    }
+
+    .warning-btn {
+      background-color: #f39c12;
+    }
+
+    .danger-btn {
+      background-color: #e74c3c;
+    }
   </style>
 </head>
 <body>
@@ -184,14 +247,16 @@
   <div class="container">
     <h1>Cloudflare Verification</h1>
     
-    <div class="verification-step">
-      <h2>Verification Instructions</h2>
-      <p>A verification challenge has been detected. Follow these steps:</p>
+    <div class="verification-instructions">
+      <h3>Important Instructions</h3>
       <ol>
-        <li>Click "Open Remote Browser" to view the verification page</li>
-        <li>Complete the CAPTCHA or verification challenge</li>
-        <li>Click the "Verify" button to confirm you've completed the challenge</li>
+        <li>A Cloudflare verification challenge has been detected and needs to be completed manually.</li>
+        <li>Click <span class="emphasis">"Open Remote Browser"</span> to view the verification page.</li>
+        <li>Complete the CAPTCHA or challenge <span class="emphasis">fully</span> until you reach the actual website content.</li>
+        <li>After completing the challenge, click <span class="emphasis">"Verify Challenge"</span> to check if verification was successful.</li>
+        <li>Then click <span class="emphasis">"Complete Verification"</span> to save the cookies and continue.</li>
       </ol>
+      <p><strong>Note:</strong> If the verification fails, you may need to try again. Make sure you complete the entire challenge until you see the actual website content.</p>
     </div>
     
     <div id="session-info">
@@ -204,16 +269,17 @@
       Time Remaining: <span id="time-remaining">--:--</span>
     </div>
     
+    <div id="status-message"></div>
     <div id="error-message" class="error-message"></div>
     
     <div class="verification-controls">
-      <button id="open-remote-browser-btn">Open Remote Browser</button>
-      <button id="verify-manually-btn" disabled>Verify Challenge</button>
+      <button id="open-remote-browser-btn" class="primary-btn">Open Remote Browser</button>
+      <button id="verify-manually-btn" disabled class="warning-btn">Verify Challenge</button>
     </div>
 
     <div class="controls">
-      <button id="complete-btn" disabled>Complete Verification</button>
-      <button id="cancel-btn">Cancel Verification</button>
+      <button id="complete-btn" disabled class="success-btn">Complete Verification</button>
+      <button id="cancel-btn" class="danger-btn">Cancel Verification</button>
     </div>
   </div>
 
@@ -342,16 +408,68 @@
       remoteScreenImage.src = '';
     }
     
-    function handleManualVerification() {
-      // This function is called when user confirms they've completed the verification
-      showError('Please confirm you have completed the CAPTCHA or challenge.');
-      completeBtn.disabled = false;
+    async function handleManualVerification() {
+      try {
+        // Show status message
+        showStatus('Checking if verification is complete...', 'info');
+        
+        // Get current screenshot to verify if captcha is solved
+        const remoteViewUrl = remoteScreenImage.dataset.remoteViewUrl;
+        
+        if (remoteViewUrl) {
+          const response = await fetch(remoteViewUrl);
+          const data = await response.json();
+          
+          if (data.status === 'success' && data.data && data.data.screenshot) {
+            // Set image source to check visually
+            remoteScreenImage.src = data.data.screenshot;
+            
+            // Check if the screenshot still shows Cloudflare verification
+            // Note: This is just a visual confirmation for the user - they still need to complete verification manually
+            const containsCloudflare = await checkIfStillOnCloudflare();
+            
+            if (containsCloudflare) {
+              showError('Verification not complete yet. Please complete the CAPTCHA or challenge.');
+              return;
+            }
+            
+            // If we don't detect Cloudflare, show a positive message
+            showStatus('Verification appears complete! Click "Complete Verification" to save cookies and continue.', 'success');
+            completeBtn.disabled = false;
+          }
+        }
+      } catch (error) {
+        showError(`Error checking verification status: ${error.message}`);
+      }
+    }
+    
+    async function checkIfStillOnCloudflare() {
+      try {
+        // API endpoint to check if the current page is still a Cloudflare page
+        const response = await fetch(`/api/verify/${sessionId}/check-cloudflare`);
+        const data = await response.json();
+        
+        return data.status === 'detecting_cloudflare';
+      } catch (error) {
+        console.error('Error checking Cloudflare status:', error);
+        return false; // Assuming no Cloudflare if we can't check
+      }
     }
     
     async function completeVerification() {
       try {
         completeBtn.disabled = true;
         completeBtn.textContent = 'Processing...';
+        showStatus('Attempting to complete verification...', 'info');
+        
+        // Check once more if still on Cloudflare
+        const stillOnCloudflare = await checkIfStillOnCloudflare();
+        if (stillOnCloudflare) {
+          showError('Verification does not appear to be complete. Please finish the Cloudflare challenge first.');
+          completeBtn.disabled = false;
+          completeBtn.textContent = 'Complete Verification';
+          return;
+        }
         
         const response = await fetch(`/api/verify/${sessionId}/complete`, {
           method: 'POST'
@@ -365,13 +483,18 @@
           
           // Show success message
           errorMessageElem.style.color = 'green';
-          errorMessageElem.textContent = 'Verification completed successfully!';
+          errorMessageElem.textContent = 'Verification completed successfully! Cookies saved.';
           
           // Disable all buttons
           openRemoteBrowserBtn.disabled = true;
           verifyManuallyBtn.disabled = true;
           completeBtn.disabled = true;
           cancelBtn.disabled = true;
+          
+          // Add delay message
+          setTimeout(() => {
+            errorMessageElem.textContent = 'Verification completed successfully! You can close this window now.';
+          }, 3000);
         } else {
           showError(data.message);
           completeBtn.disabled = false;
@@ -420,7 +543,44 @@
       }
     }
     
+    function showStatus(message, type = 'info') {
+      const statusElem = document.getElementById('status-message');
+      if (!statusElem) {
+        // Create status element if it doesn't exist
+        const newStatusElem = document.createElement('div');
+        newStatusElem.id = 'status-message';
+        newStatusElem.style.marginTop = '10px';
+        newStatusElem.style.padding = '10px';
+        newStatusElem.style.borderRadius = '5px';
+        newStatusElem.style.textAlign = 'center';
+        
+        // Insert before the error message
+        const container = document.querySelector('.container');
+        const errorMessage = document.getElementById('error-message');
+        container.insertBefore(newStatusElem, errorMessage);
+      }
+      
+      const elem = document.getElementById('status-message');
+      elem.textContent = message;
+      
+      // Set appropriate colors
+      if (type === 'info') {
+        elem.style.backgroundColor = '#e3f2fd';
+        elem.style.color = '#0d47a1';
+      } else if (type === 'success') {
+        elem.style.backgroundColor = '#e8f5e9';
+        elem.style.color = '#1b5e20';
+      } else if (type === 'warning') {
+        elem.style.backgroundColor = '#fff3e0';
+        elem.style.color = '#e65100';
+      } else if (type === 'error') {
+        elem.style.backgroundColor = '#ffebee';
+        elem.style.color = '#b71c1c';
+      }
+    }
+    
     function showError(message) {
+      errorMessageElem.style.color = '#e74c3c';
       errorMessageElem.textContent = message;
       errorMessageElem.style.display = 'block';
     }
@@ -459,7 +619,10 @@
         const result = await response.json();
         if (result.status === 'success') {
           // Refresh screen after successful action
-          await refreshRemoteScreen();
+          if (action === 'mouseup') {
+            // For mouse up actions, refresh with a small delay to allow page to respond
+            setTimeout(refreshRemoteScreen, 500);
+          }
         } else {
           throw new Error(result.message);
         }
@@ -470,37 +633,61 @@
     }
 
     function handleMouseDown(event) {
+      if (!remoteScreenPopup.contains(event.target)) return;
       event.preventDefault(); // Prevent default browser actions
-      if (event.button === 0) { // Left click
-        const coords = getRelativeCoordinates(event);
-        sendRemoteAction('mousedown', {
-          x: coords.x,
-          y: coords.y,
-          button: 'left'
-        });
+      
+      try {
+        if (event.button === 0) { // Left click
+          const coords = getRelativeCoordinates(event);
+          sendRemoteAction('mousedown', {
+            x: coords.x,
+            y: coords.y,
+            button: 'left'
+          });
+          
+          // Visual feedback
+          addClickEffect(event.clientX, event.clientY);
+        }
+      } catch (error) {
+        console.error('Mouse down error:', error);
       }
     }
 
     function handleMouseUp(event) {
+      if (!remoteScreenPopup.contains(event.target)) return;
       event.preventDefault(); // Prevent default browser actions
-      if (event.button === 0) { // Left click
-        const coords = getRelativeCoordinates(event);
-        sendRemoteAction('mouseup', {
-          x: coords.x,
-          y: coords.y,
-          button: 'left'
-        });
+      
+      try {
+        if (event.button === 0) { // Left click
+          const coords = getRelativeCoordinates(event);
+          sendRemoteAction('mouseup', {
+            x: coords.x,
+            y: coords.y,
+            button: 'left'
+          });
+          
+          // Auto-refresh the screen after clicking (helps with seeing changes)
+          setTimeout(refreshRemoteScreen, 500);
+        }
+      } catch (error) {
+        console.error('Mouse up error:', error);
       }
     }
 
     function handleMouseMove(event) {
+      if (!remoteScreenPopup.contains(event.target)) return;
       event.preventDefault(); // Prevent default browser actions
-      if (event.buttons === 1) { // Left mouse button held down
-        const coords = getRelativeCoordinates(event);
-        sendRemoteAction('mousemove', {
-          x: coords.x,
-          y: coords.y
-        });
+      
+      try {
+        if (event.buttons === 1) { // Left mouse button held down
+          const coords = getRelativeCoordinates(event);
+          sendRemoteAction('mousemove', {
+            x: coords.x,
+            y: coords.y
+          });
+        }
+      } catch (error) {
+        console.error('Mouse move error:', error);
       }
     }
 
@@ -532,6 +719,36 @@
         ctrlKey: event.ctrlKey,
         shiftKey: event.shiftKey
       });
+    }
+
+    function addClickEffect(x, y) {
+      const clickEffect = document.createElement('div');
+      clickEffect.classList.add('click-effect');
+      clickEffect.style.position = 'absolute';
+      clickEffect.style.left = (x - 10) + 'px';
+      clickEffect.style.top = (y - 10) + 'px';
+      clickEffect.style.width = '20px';
+      clickEffect.style.height = '20px';
+      clickEffect.style.borderRadius = '50%';
+      clickEffect.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
+      clickEffect.style.zIndex = '1000';
+      clickEffect.style.pointerEvents = 'none';
+      
+      document.body.appendChild(clickEffect);
+      
+      // Animation
+      clickEffect.animate([
+        { opacity: 1, transform: 'scale(1)' },
+        { opacity: 0, transform: 'scale(2)' }
+      ], {
+        duration: 500,
+        easing: 'ease-out'
+      });
+      
+      // Remove after animation
+      setTimeout(() => {
+        document.body.removeChild(clickEffect);
+      }, 500);
     }
 
     async function refreshRemoteScreen() {
