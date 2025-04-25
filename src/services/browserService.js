@@ -6,6 +6,7 @@ const fs = require('fs');
 const config = require('../config');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 
 class BrowserService {
   constructor() {
@@ -21,6 +22,33 @@ class BrowserService {
     
     if (!fs.existsSync(this.cookiesPath)) {
       fs.mkdirSync(this.cookiesPath, { recursive: true });
+    }
+    
+    // Kill any hanging chrome processes when the service starts
+    this._killChrome();
+  }
+
+  /**
+   * Kill any hanging Chrome or chromedriver processes
+   * @private
+   */
+  _killChrome() {
+    try {
+      // This is platform-dependent, but worth trying
+      if (process.platform === 'linux') {
+        execSync('pkill -f chrome', { stdio: 'ignore' });
+        execSync('pkill -f chromedriver', { stdio: 'ignore' });
+      } else if (process.platform === 'win32') {
+        execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
+        execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
+      } else if (process.platform === 'darwin') {
+        execSync('pkill -f Google\\ Chrome', { stdio: 'ignore' });
+        execSync('pkill -f chromedriver', { stdio: 'ignore' });
+      }
+      logger.info('Killed any hanging Chrome processes');
+    } catch (error) {
+      // It's okay if this fails, it means no processes were found
+      logger.info('No hanging Chrome processes found to kill');
     }
   }
 
@@ -40,11 +68,12 @@ class BrowserService {
       // Generate random user agent
       const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
       
-      // Set Chrome options
+      // Set Chrome options - USING INCOGNITO MODE to avoid profile issues
       const options = new chrome.Options();
       if (headless) {
         options.addArguments('--headless=new');
       }
+      options.addArguments('--incognito');  // Run in incognito mode
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
       options.addArguments('--disable-gpu');
@@ -54,7 +83,9 @@ class BrowserService {
       options.addArguments('--disable-web-security');
       options.addArguments('--ignore-certificate-errors');
       options.addArguments('--allow-insecure-localhost');
-      // Important: DO NOT set user-data-dir
+      options.addArguments('--disable-application-cache');
+      options.addArguments('--disable-infobars');
+      options.addArguments('--test-type');
       
       // Set download preferences for headless Chrome
       options.setUserPreferences({
@@ -63,6 +94,11 @@ class BrowserService {
         'download.directory_upgrade': true,
         'safebrowsing.enabled': false
       });
+      
+      // Set Chrome binary path if provided
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
       
       // Add custom ChromeDriver path if specified
       let service = null;
@@ -128,6 +164,10 @@ class BrowserService {
     for (const id of instanceIds) {
       await this.closeDriver(id);
     }
+    
+    // Also kill any hanging Chrome processes
+    this._killChrome();
+    
     logger.info('All WebDrivers closed successfully');
   }
 
@@ -367,6 +407,9 @@ class BrowserService {
    */
   async launchVerificationSession(url) {
     try {
+      // Make sure there are no hanging Chrome processes
+      this._killChrome();
+      
       // Generate a session ID
       const sessionId = this._generateSessionId();
       
@@ -376,7 +419,8 @@ class BrowserService {
       options.addArguments('--disable-dev-shm-usage');
       options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
-      // Important: DO NOT set user-data-dir
+      options.addArguments('--disable-extensions');
+      // No incognito mode for verification sessions as we need to keep cookies
       
       // Configure download directory
       options.setUserPreferences({
@@ -385,6 +429,11 @@ class BrowserService {
         'download.directory_upgrade': true,
         'safebrowsing.enabled': false
       });
+      
+      // Set Chrome binary path if provided
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
       
       // Create a new driver instance for verification
       let service = null;
