@@ -53,7 +53,7 @@
     .remote-screen-content {
       flex-grow: 1;
       position: relative;
-      overflow: auto;
+      overflow: hidden;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -63,6 +63,18 @@
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
+      position: relative;
+      z-index: 1;
+    }
+
+    #remote-screen-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      cursor: crosshair;
     }
 
     .close-popup-btn {
@@ -83,6 +95,24 @@
       background: rgba(0,0,0,0.5);
       z-index: 999;
       display: none;
+    }
+
+    .loading-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255,255,255,0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 10;
+    }
+
+    #loading-text {
+      font-size: 18px;
+      color: #3498db;
     }
 
     .controls, .verification-controls {
@@ -130,24 +160,6 @@
       margin-top: 10px;
       color: #e74c3c;
     }
-
-    .loading-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(255,255,255,0.8);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      z-index: 10;
-    }
-
-    #loading-text {
-      font-size: 18px;
-      color: #3498db;
-    }
   </style>
 </head>
 <body>
@@ -165,6 +177,7 @@
         <span id="loading-text">Loading remote browser...</span>
       </div>
       <img id="remote-screen-image" src="" alt="Remote Browser Screen">
+      <div id="remote-screen-overlay"></div>
     </div>
   </div>
 
@@ -217,6 +230,7 @@
     const errorMessageElem = document.getElementById('error-message');
     const remoteScreenPopup = document.getElementById('remote-screen-popup');
     const remoteScreenImage = document.getElementById('remote-screen-image');
+    const remoteScreenOverlay = document.getElementById('remote-screen-overlay');
     const loadingOverlay = document.getElementById('loading-overlay');
     const overlay = document.getElementById('overlay');
     
@@ -411,20 +425,7 @@
       errorMessageElem.style.display = 'block';
     }
     
-    // Cleanup on page unload
-    window.addEventListener('beforeunload', async () => {
-      if (sessionId) {
-        try {
-          await fetch(`/api/verify/${sessionId}`, { method: 'DELETE' });
-        } catch (error) {
-          console.error('Error cleaning up session:', error);
-        }
-      }
-    });
-
-    const remoteScreenOverlay = document.getElementById('remote-screen-overlay');
-
-    // Add remote control event listeners
+    // Remote Control Event Listeners
     remoteScreenOverlay.addEventListener('mousedown', handleMouseDown);
     remoteScreenOverlay.addEventListener('mouseup', handleMouseUp);
     remoteScreenOverlay.addEventListener('mousemove', handleMouseMove);
@@ -455,8 +456,13 @@
           })
         });
 
-        // Optionally refresh screen after action
-        await refreshRemoteScreen();
+        const result = await response.json();
+        if (result.status === 'success') {
+          // Refresh screen after successful action
+          await refreshRemoteScreen();
+        } else {
+          throw new Error(result.message);
+        }
       } catch (error) {
         console.error('Remote control error:', error);
         showError(`Remote control failed: ${error.message}`);
@@ -464,6 +470,7 @@
     }
 
     function handleMouseDown(event) {
+      event.preventDefault(); // Prevent default browser actions
       if (event.button === 0) { // Left click
         const coords = getRelativeCoordinates(event);
         sendRemoteAction('mousedown', {
@@ -475,6 +482,7 @@
     }
 
     function handleMouseUp(event) {
+      event.preventDefault(); // Prevent default browser actions
       if (event.button === 0) { // Left click
         const coords = getRelativeCoordinates(event);
         sendRemoteAction('mouseup', {
@@ -486,6 +494,7 @@
     }
 
     function handleMouseMove(event) {
+      event.preventDefault(); // Prevent default browser actions
       if (event.buttons === 1) { // Left mouse button held down
         const coords = getRelativeCoordinates(event);
         sendRemoteAction('mousemove', {
@@ -496,8 +505,10 @@
     }
 
     function handleKeyDown(event) {
-      // Prevent default to avoid browser shortcuts
-      event.preventDefault();
+      // Only handle key events when remote screen is open
+      if (!remoteScreenPopup.contains(event.target)) return;
+
+      event.preventDefault(); // Prevent default browser actions
       
       sendRemoteAction('keydown', {
         key: event.key,
@@ -509,8 +520,10 @@
     }
 
     function handleKeyUp(event) {
-      // Prevent default to avoid browser shortcuts
-      event.preventDefault();
+      // Only handle key events when remote screen is open
+      if (!remoteScreenPopup.contains(event.target)) return;
+
+      event.preventDefault(); // Prevent default browser actions
       
       sendRemoteAction('keyup', {
         key: event.key,
@@ -523,8 +536,33 @@
 
     async function refreshRemoteScreen() {
       // Reuse existing openRemoteScreen logic to refresh
-      await openRemoteScreen();
+      try {
+        const remoteViewUrl = remoteScreenImage.dataset.remoteViewUrl;
+        
+        if (remoteViewUrl) {
+          const response = await fetch(remoteViewUrl);
+          const data = await response.json();
+          
+          if (data.status === 'success' && data.data && data.data.screenshot) {
+            // Update image source
+            remoteScreenImage.src = data.data.screenshot;
+          }
+        }
+      } catch (error) {
+        console.error('Error refreshing remote screen:', error);
+      }
     }
+    
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', async () => {
+      if (sessionId) {
+        try {
+          await fetch(`/api/verify/${sessionId}`, { method: 'DELETE' });
+        } catch (error) {
+          console.error('Error cleaning up session:', error);
+        }
+      }
+    });
   </script>
 </body>
 </html>
