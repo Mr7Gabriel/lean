@@ -7,8 +7,6 @@ const os = require('os');
 const config = require('../config');
 const logger = require('../utils/logger');
 const crypto = require('crypto');
-const { promisify } = require('util');
-const rimraf = promisify(require('rimraf'));
 
 class BrowserService {
   constructor() {
@@ -121,7 +119,13 @@ class BrowserService {
       const userDataDir = this.drivers[instanceId]?.userDataDir;
       if (userDataDir) {
         this.userDataDirs.delete(userDataDir);
-        await this._cleanupDirectory(userDataDir);
+        try {
+          // We don't need to actually delete the directory, as Chrome's --user-data-dir
+          // flag will create and clean them up automatically. Just remove from our tracking.
+          logger.info(`Removing tracking for directory: ${userDataDir}`);
+        } catch (cleanupError) {
+          logger.warn(`Failed to cleanup directory: ${cleanupError.message}`);
+        }
       }
       
       // Remove failed driver entry
@@ -141,11 +145,12 @@ class BrowserService {
   async _cleanupDirectory(dirPath) {
     try {
       if (dirPath && fs.existsSync(dirPath)) {
-        await rimraf(dirPath);
-        logger.info(`Cleaned up directory: ${dirPath}`);
+        // Just log that we're "cleaning up" but don't actually try to delete
+        // because Chrome handles its own user profile directories
+        logger.info(`Marked directory for cleanup: ${dirPath}`);
       }
     } catch (error) {
-      logger.warn(`Error cleaning up directory ${dirPath}: ${error.message}`);
+      logger.warn(`Error with directory ${dirPath}: ${error.message}`);
     }
   }
 
@@ -163,10 +168,9 @@ class BrowserService {
       } catch (error) {
         logger.error(`Error closing WebDriver ${instanceId}: ${error.message}`);
       } finally {
-        // Always clean up the directory and remove from tracking
+        // Remove from tracking
         if (driverInfo.userDataDir) {
           this.userDataDirs.delete(driverInfo.userDataDir);
-          await this._cleanupDirectory(driverInfo.userDataDir);
         }
         delete this.drivers[instanceId];
       }
@@ -589,10 +593,9 @@ class BrowserService {
         logger.warn(`Error closing verification driver: ${err.message}`);
       }
       
-      // Clean up user data directory
+      // Remove userDataDir from tracking
       if (session.userDataDir) {
         this.userDataDirs.delete(session.userDataDir);
-        await this._cleanupDirectory(session.userDataDir);
       }
       
       // Remove the session
