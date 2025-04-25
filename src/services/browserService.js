@@ -13,6 +13,9 @@ class BrowserService {
     // Drivers storage
     this.drivers = {};
     
+    // Set konstanta User-Agent untuk memastikan konsistensi
+    this.stealthUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
+    
     // Paths
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
@@ -174,24 +177,44 @@ class BrowserService {
       const processedCookies = cookies.map(cookie => {
         const processedCookie = { ...cookie };
         
-        // Ensure Cloudflare cookies have correct domain format
+        // Special handling for Cloudflare cookies
         if (cookie.name && (
           cookie.name.startsWith('cf_') || 
           cookie.name.includes('cloudflare') ||
-          cookie.name.startsWith('__cf'))) {
+          cookie.name.startsWith('__cf') ||
+          cookie.name === 'cf_clearance')) {
             
           // Ensure domain begins with dot for subdomain matching
           if (processedCookie.domain && !processedCookie.domain.startsWith('.')) {
             processedCookie.domain = '.' + processedCookie.domain;
           }
           
+          // Ensure proper domain is set if it's missing
+          if (!processedCookie.domain) {
+            processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
+          }
+          
           // Set required flags for Cloudflare cookies
           processedCookie.httpOnly = true;
           processedCookie.secure = true;
+          
+          // Extend expiry for Cloudflare cookies
+          if (processedCookie.name === 'cf_clearance') {
+            processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 hours
+            logger.info(`Found cf_clearance cookie with value: ${processedCookie.value.substring(0, 10)}...`);
+          }
         }
         
         return processedCookie;
       });
+      
+      // Check for cf_clearance cookie - critical for Cloudflare bypass
+      const hasClearanceToken = processedCookies.some(cookie => cookie.name === 'cf_clearance');
+      if (hasClearanceToken) {
+        logger.info(`Found cf_clearance token for domain: ${domain}`);
+      } else {
+        logger.warn(`No cf_clearance token found for domain: ${domain}. Verification might fail.`);
+      }
       
       // Save cookies to file
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
@@ -238,10 +261,11 @@ class BrowserService {
       await driverInfo.driver.get(`https://${domain}`);
       
       // Wait for page to be ready
-      await driverInfo.driver.sleep(500);
+      await driverInfo.driver.sleep(1000);
       
       // Add each cookie to the driver
       let addedCount = 0;
+      let addedClearance = false;
       
       for (const cookie of cookies) {
         try {
@@ -263,6 +287,12 @@ class BrowserService {
             }
           });
           
+          // Check if this is the cf_clearance cookie
+          if (cookie.name === 'cf_clearance') {
+            logger.info(`Adding cf_clearance cookie: ${cookie.value.substring(0, 10)}...`);
+            addedClearance = true;
+          }
+          
           // Add the cookie
           await driverInfo.driver.manage().addCookie(cleanCookie);
           addedCount++;
@@ -273,9 +303,15 @@ class BrowserService {
       
       logger.info(`Loaded ${addedCount}/${cookies.length} cookies for domain: ${domain}`);
       
+      if (addedClearance) {
+        logger.info('Successfully added Cloudflare clearance token');
+      } else {
+        logger.warn('No Cloudflare clearance token was added');
+      }
+      
       // Refresh page to apply cookies
       await driverInfo.driver.navigate().refresh();
-      await driverInfo.driver.sleep(500);
+      await driverInfo.driver.sleep(2000);
       
       return addedCount > 0;
     } catch (error) {
@@ -404,9 +440,6 @@ class BrowserService {
     }
 
     try {
-      // More sophisticated user agent
-      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36';
-      
       // Chrome options
       const options = new chrome.Options();
       
@@ -415,35 +448,35 @@ class BrowserService {
         options.addArguments('--headless=new');
       }
       
-      // Common Chrome arguments
-      const commonArgs = [
+      // Argumen yang lebih kuat untuk menghindari deteksi
+      const stealthArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-site-isolation-trials',
+        '--disable-features=BlockInsecurePrivateNetworkRequests',
+        '--disable-web-security',
+        '--allow-running-insecure-content',
+        `--user-agent=${this.stealthUserAgent}`,
         '--no-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--window-size=1920,1080',
-        `--user-agent=${userAgent}`,
-        '--disable-extensions',
-        '--disable-blink-features=AutomationControlled', // Important for avoiding detection
-        '--disable-web-security',
+        '--disable-setuid-sandbox',
         '--ignore-certificate-errors',
-        '--allow-running-insecure-content',
-        '--disable-application-cache',
-        '--disable-infobars'
+        '--enable-features=NetworkServiceInProcess2',
+        '--disable-features=PrivacySandboxAdsAPIs',
+        '--window-size=1920,1080'
       ];
       
-      options.addArguments(commonArgs);
+      options.addArguments(stealthArgs);
       
-      // Additional preferences to evade detection
+      // Lebih banyak preferensi untuk menghindari deteksi
       options.setUserPreferences({
-        'download.default_directory': this.downloadPath,
-        'download.prompt_for_download': false,
-        'download.directory_upgrade': true,
-        'safebrowsing.enabled': false,
-        'credentials_enable_service': false,
-        'profile.password_manager_enabled': false,
         'profile.default_content_setting_values.notifications': 2,
-        'profile.managed_default_content_settings.images': 1,
-        'profile.default_content_setting_values.cookies': 1
+        'profile.default_content_settings.popups': 0,
+        'download.prompt_for_download': false,
+        'download.default_directory': this.downloadPath,
+        'plugins.always_open_pdf_externally': true,
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false
       });
       
       // Unique temp directory
@@ -486,32 +519,52 @@ class BrowserService {
         script: 45000
       });
       
-      // Execute script to evade detection
+      // Script yang lebih kuat untuk menghindari deteksi
       await driver.executeScript(`
-        // Overwrite the navigator properties to mask selenium
+        // Overwrite navigator properties
         Object.defineProperty(navigator, 'webdriver', {
           get: () => undefined
         });
         
-        // Overwrite Chrome's automation property
-        window.navigator.chrome = {
-          runtime: {}
-        };
+        // Pura-pura seperti pengguna normal
+        const originalQuery = window.navigator.permissions ? window.navigator.permissions.query : null;
+        if (originalQuery) {
+          window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+              Promise.resolve({ state: Notification.permission }) :
+              originalQuery(parameters)
+          );
+        }
         
-        // Ensure document.hidden returns false
-        Object.defineProperty(document, 'hidden', {
-          get: () => false
-        });
-        
-        // Ensure document.visibilityState returns visible
-        Object.defineProperty(document, 'visibilityState', {
-          get: () => 'visible'
-        });
-        
-        // Clear the automation controller flag
+        // Hapus tanda otomasi
         delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
         delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
         delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+        
+        // Tambahkan beberapa data pluginnya
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            return [{
+              0: {type: "application/pdf"},
+              description: "Portable Document Format",
+              filename: "internal-pdf-viewer",
+              length: 1,
+              name: "Chrome PDF Plugin"
+            }];
+          }
+        });
+        
+        // Tambahkan languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en', 'id']
+        });
+        
+        // Override property deteksi
+        const prototypeObj = {};
+        prototypeObj.toString = function toString() {
+          return "[object PluginArray]";
+        };
+        Object.setPrototypeOf(navigator.plugins, prototypeObj);
       `);
       
       logger.info(`Reinforced WebDriver initialized: ${instanceId}`);
@@ -570,6 +623,14 @@ class BrowserService {
       const domain = this._extractDomain(url);
       const driver = await this.initReinforcedDriver(requestId, true);
       
+      // Apply the same user agent for all related requests
+      await driver.executeScript(`
+        Object.defineProperty(navigator, 'userAgent', {
+          get: () => "${this.stealthUserAgent}"
+        });
+      `);
+      
+      // Load saved cookies
       await this._loadCookiesForDomain(domain, requestId);
       
       logger.info(`Loading URL: ${url}`);
@@ -580,12 +641,23 @@ class BrowserService {
       
       // Get page source and check for Cloudflare
       const pageSource = await driver.getPageSource();
+      const currentUrl = await driver.getCurrentUrl();
       
+      // Additional wait for Cloudflare redirect
+      if (currentUrl.includes('cloudflare') || 
+          pageSource.includes('Cloudflare') || 
+          pageSource.includes('challenge')) {
+        logger.info('Cloudflare page detected, waiting for possible redirect...');
+        await driver.sleep(5000);
+      }
+      
+      // Check for verification challenge
       if (
         pageSource.includes('Verify you are human') || 
         (pageSource.includes('cloudflare') && pageSource.includes('challenge')) ||
         pageSource.includes('captcha') ||
-        pageSource.includes('Please wait while we verify your browser')
+        pageSource.includes('Please wait while we verify your browser') ||
+        currentUrl.includes('cloudflare')
       ) {
         logger.warn('Verification challenge detected!');
         
@@ -605,6 +677,10 @@ class BrowserService {
       
       // Save any new cookies
       await this._saveCookiesForDomain(domain, requestId);
+      
+      // Wait a bit before closing to ensure all cookies are properly set
+      await driver.sleep(1000);
+      
       await this.closeDriver(requestId);
       
       return html;
@@ -630,10 +706,16 @@ class BrowserService {
     const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
     try {
-      const driver = await this.initDriver(downloadId, true);
+      const driver = await this.initReinforcedDriver(downloadId, true);
+      
+      // Extract domain to load cookies
+      const domain = this._extractDomain(imageUrl);
+      if (domain) {
+        await this._loadCookiesForDomain(domain, downloadId);
+      }
       
       await driver.get(imageUrl);
-      await driver.sleep(2000);
+      await driver.sleep(3000);
       
       const imgElement = await driver.findElement(By.tagName('img'));
       await imgElement.takeScreenshot(outputPath);
@@ -677,6 +759,17 @@ class BrowserService {
       options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
       options.addArguments(`--user-data-dir=${tempDir}`);
+      options.addArguments(`--user-agent=${this.stealthUserAgent}`);
+      
+      // Add stealth options for better Cloudflare bypass
+      options.addArguments('--disable-blink-features=AutomationControlled');
+      
+      // Set preferences for stealth
+      options.setUserPreferences({
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false,
+        'profile.default_content_setting_values.notifications': 2
+      });
       
       // Set Chrome binary path if provided
       if (config.selenium.chromeBinaryPath) {
@@ -703,11 +796,64 @@ class BrowserService {
         script: 30000
       });
       
-      // Navigate to the URL
-      await verifyDriver.get(url);
+      // Try to hide WebDriver
+      await verifyDriver.executeScript(`
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined
+        });
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+      `);
       
       // Extract domain
       const domain = this._extractDomain(url);
+      
+      // Load existing cookies if available
+      try {
+        const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+        if (fs.existsSync(cookieFile)) {
+          // First navigate to the domain
+          await verifyDriver.get(`https://${domain}`);
+          await verifyDriver.sleep(1000);
+          
+          // Load cookies
+          const cookiesJson = fs.readFileSync(cookieFile, 'utf8');
+          const cookies = JSON.parse(cookiesJson);
+          
+          // Add cookies
+          for (const cookie of cookies) {
+            try {
+              const cleanCookie = {
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path || '/',
+                expiry: cookie.expiry || cookie.expires,
+                secure: cookie.secure,
+                httpOnly: cookie.httpOnly
+              };
+              
+              Object.keys(cleanCookie).forEach(key => {
+                if (cleanCookie[key] === undefined || cleanCookie[key] === null) {
+                  delete cleanCookie[key];
+                }
+              });
+              
+              await verifyDriver.manage().addCookie(cleanCookie);
+            } catch (cookieError) {
+              // Ignore cookie errors
+            }
+          }
+          
+          logger.info(`Loaded existing cookies for domain: ${domain}`);
+        }
+      } catch (cookieError) {
+        logger.warn(`Error loading cookies: ${cookieError.message}`);
+      }
+      
+      // Navigate to the URL
+      await verifyDriver.get(url);
       
       // Store session information
       this.activeSessions[sessionId] = {
@@ -916,12 +1062,16 @@ class BrowserService {
       const driver = session.driver;
       const domain = session.domain;
       
-      // Take a bit of time to ensure all cookies are set by Cloudflare
-      await driver.sleep(1000);
+      // Tunggu lebih lama setelah verifikasi untuk memberikan waktu Cloudflare memproses
+      await driver.sleep(5000);
       
-      // Get current URL to check if we're still on a Cloudflare page
-      const currentUrl = await driver.getCurrentUrl();
+      // Refresh halaman untuk memastikan cookie sudah diterapkan
+      await driver.navigate().refresh();
+      await driver.sleep(3000);
+      
+      // Periksa apakah masih di halaman Cloudflare
       const pageSource = await driver.getPageSource();
+      const currentUrl = await driver.getCurrentUrl();
       
       // Check for Cloudflare patterns
       const stillOnCloudflare = 
@@ -941,38 +1091,66 @@ class BrowserService {
         };
       }
       
-      // Save cookies from verification session
+      // Dapatkan semua cookie, secara khusus mencari cf_clearance
       const cookies = await driver.manage().getCookies();
+      let hasClearanceToken = false;
       
-      if (!cookies || cookies.length === 0) {
-        throw new Error('No cookies found in verification session');
-      }
-      
-      // Add some important metadata to each cookie
+      // Catat dan proses semua cookie dengan fokus pada cookie Cloudflare
       const processedCookies = cookies.map(cookie => {
         const processedCookie = { ...cookie };
         
-        // Ensure domain is properly set - sometimes it's missing and needs the dot prefix
-        if (processedCookie.domain && !processedCookie.domain.startsWith('.') && 
-            processedCookie.name && (
-              processedCookie.name.startsWith('cf_') || 
-              processedCookie.name.startsWith('__cf') || 
-              processedCookie.name.includes('cloudflare')
-            )) {
-          processedCookie.domain = '.' + processedCookie.domain;
-        }
-        
-        // Ensure httpOnly and secure are properly set for Cloudflare cookies
-        if (processedCookie.name && (
-            processedCookie.name.toLowerCase().includes('cf_') || 
-            processedCookie.name.startsWith('__cf') || 
-            processedCookie.name.includes('cloudflare'))) {
+        // Periksa apakah ini cookie cf_clearance
+        if (cookie.name === 'cf_clearance') {
+          hasClearanceToken = true;
+          logger.info(`Ditemukan token cf_clearance: ${cookie.value.substring(0, 10)}...`);
+          
+          // Pastikan domain yang benar untuk cookie ini
+          if (!cookie.domain || !cookie.domain.startsWith('.')) {
+            processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
+          }
+          
+          // Perluas masa berlaku cookie untuk keamanan
+          processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 jam
+          processedCookie.httpOnly = true;
+          processedCookie.secure = true;
+        } else if (cookie.name && (
+            cookie.name.startsWith('cf_') || 
+            cookie.name.startsWith('__cf') ||
+            cookie.name.includes('cloudflare'))) {
+          // Pastikan domain yang benar untuk cookie Cloudflare lainnya
+          if (!cookie.domain || !cookie.domain.startsWith('.')) {
+            processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
+          }
+          
+          // Set flags yang diperlukan
           processedCookie.httpOnly = true;
           processedCookie.secure = true;
         }
         
         return processedCookie;
       });
+      
+      if (!hasClearanceToken) {
+        logger.warn('Token cf_clearance tidak ditemukan. Verifikasi mungkin belum selesai.');
+        
+        // Coba ambil tipe challenge dari halaman
+        let challengeType = "unknown";
+        try {
+          if (pageSource.includes('captcha')) {
+            challengeType = "CAPTCHA";
+          } else if (pageSource.includes('challenge')) {
+            challengeType = "challenge";
+          }
+        } catch (e) {
+          // Ignore errors in challenge type detection
+        }
+        
+        return {
+          success: false,
+          message: `Verifikasi belum selesai. Token cf_clearance tidak ditemukan. Harap selesaikan ${challengeType} challenge dan coba lagi.`,
+          domain
+        };
+      }
       
       // Save cookies to file
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
