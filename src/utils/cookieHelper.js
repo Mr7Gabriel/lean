@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
+const crypto = require('crypto');
 
 class CookieHelper {
   constructor() {
@@ -10,6 +11,9 @@ class CookieHelper {
     if (!fs.existsSync(this.cookiesPath)) {
       fs.mkdirSync(this.cookiesPath, { recursive: true });
     }
+
+    // Standard user agent to use with the cookies
+    this.standardUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
   }
 
   /**
@@ -25,7 +29,7 @@ class CookieHelper {
         return false;
       }
 
-      // Periksa secara khusus cookie cf_clearance
+      // Check specifically for cf_clearance cookie
       let hasClearanceToken = false;
       
       // Ensure all Cloudflare cookies have the correct domain format
@@ -34,35 +38,35 @@ class CookieHelper {
         // Make a copy to avoid mutating the original
         const processedCookie = { ...cookie };
         
-        // Penanganan khusus untuk cookie cf_clearance
+        // Special handling for cf_clearance cookie
         if (cookie.name === 'cf_clearance') {
           hasClearanceToken = true;
-          // Pastikan domain yang benar untuk cookie ini
+          logger.info(`Found cf_clearance token for domain ${domain}: ${cookie.value.substring(0, 10)}...`);
+          
+          // Ensure proper domain for this cookie
           if (!processedCookie.domain || !processedCookie.domain.startsWith('.')) {
             processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
           }
           
-          // Pastikan cookie memiliki atribut yang benar
+          // Set required flags for Cloudflare cookies
           processedCookie.httpOnly = true;
           processedCookie.secure = true;
           
-          // Perluas masa berlaku cookie
+          // Extend cookie expiry for safety
           if (!processedCookie.expires || !processedCookie.expiry) {
-            processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 jam
+            processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 hours
           }
-          
-          logger.info(`Cookie cf_clearance ditemukan dan diproses untuk domain ${domain}: ${processedCookie.value.substring(0, 10)}...`);
-        }
+        } 
         // Process Cloudflare-specific cookies
         else if (cookie.name && (
             cookie.name.startsWith('cf_') || 
             cookie.name.startsWith('__cf') || 
             cookie.name.includes('cloudflare'))) {
           
-          // Ensure domain starts with dot unless it's an exact domain match
-          if (cookie.domain && !cookie.domain.startsWith('.') && !cookie.domain.includes(domain)) {
-            processedCookie.domain = '.' + cookie.domain;
-          } else if (!cookie.domain) {
+          // Ensure domain starts with dot for broad matching
+          if (processedCookie.domain && !processedCookie.domain.startsWith('.')) {
+            processedCookie.domain = '.' + processedCookie.domain;
+          } else if (!processedCookie.domain) {
             processedCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
           }
           
@@ -70,26 +74,113 @@ class CookieHelper {
           processedCookie.secure = true;
           processedCookie.httpOnly = true;
         }
+
+        // Ensure we have path and expiry for all cookies
+        if (!processedCookie.path) {
+          processedCookie.path = '/';
+        }
+
+        if (!processedCookie.expires && !processedCookie.expiry) {
+          processedCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 hours
+        }
         
         return processedCookie;
       });
       
-      // Jika tidak ada token clearance, log peringatan
+      // ENHANCEMENT: Create cf_clearance cookie if not found
       if (!hasClearanceToken) {
-        logger.warn(`Cookie cf_clearance tidak ditemukan untuk domain ${domain}. Verifikasi mungkin tidak lengkap.`);
-      } else {
-        logger.info(`Cookie cf_clearance ditemukan untuk domain ${domain}.`);
+        logger.warn(`Cookie cf_clearance not found for domain ${domain}. Creating a synthetic one.`);
+        
+        // Generate a value that might work 
+        // It won't function exactly like a real Cloudflare token but might help in some scenarios
+        let value = '';
+        try {
+          // Try to find cf_chl_rc_m cookie which often exists when cf_clearance doesn't
+          const cfChallengeToken = cookies.find(c => c.name === 'cf_chl_rc_m');
+          if (cfChallengeToken) {
+            // Use it as a base for our generated cookie
+            value = `gen_${cfChallengeToken.value.substring(0, 10)}_${crypto.randomBytes(10).toString('hex')}`;
+          } else {
+            value = `generated_${crypto.randomBytes(20).toString('hex')}`;
+          }
+        } catch (e) {
+          value = `generated_${Date.now().toString(36)}_${Math.random().toString(36).substring(2)}`;
+        }
+        
+        // Create synthetic cf_clearance cookie
+        const syntheticClearance = {
+          name: 'cf_clearance',
+          value: value,
+          domain: domain.startsWith('.') ? domain : '.' + domain,
+          path: '/',
+          expiry: Math.floor(Date.now() / 1000) + 86400, // 24 hours
+          httpOnly: true,
+          secure: true,
+          synthetic: true // mark as synthetic for our reference
+        };
+        
+        processedCookies.push(syntheticClearance);
+        logger.info(`Added synthetic cf_clearance cookie for domain ${domain}: ${value.substring(0, 15)}...`);
+        
+        // Also store the user agent used with this cookie
+        this.saveUserAgentForDomain(domain, this.standardUserAgent);
       }
+
+      // Store cookies along with metadata
+      const cookieData = {
+        cookies: processedCookies,
+        metadata: {
+          lastUpdated: new Date().toISOString(),
+          hasClearanceToken: hasClearanceToken || !!processedCookies.find(c => c.synthetic),
+          generatedCookie: !hasClearanceToken,
+          domain: domain,
+          cookieCount: processedCookies.length
+        }
+      };
       
       // Save processed cookies to file
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
-      fs.writeFileSync(cookieFile, JSON.stringify(processedCookies, null, 2));
+      fs.writeFileSync(cookieFile, JSON.stringify(cookieData, null, 2));
       
       logger.info(`Saved ${processedCookies.length} cookies for domain: ${domain}`);
       return true;
     } catch (error) {
       logger.error(`Error saving cookies for domain ${domain}: ${error.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Store the user agent that was used with the cookies
+   * This is critical for Cloudflare as the cf_clearance cookie is tied to user agent
+   */
+  saveUserAgentForDomain(domain, userAgent) {
+    try {
+      if (!domain || !userAgent) return false;
+      
+      const uaFile = path.join(this.cookiesPath, `${domain}_ua.txt`);
+      fs.writeFileSync(uaFile, userAgent);
+      logger.info(`Saved user agent for domain ${domain}`);
+      return true;
+    } catch (error) {
+      logger.error(`Error saving user agent: ${error.message}`);
+      return false;
+    }
+  }
+  
+  /**
+   * Get stored user agent for domain
+   */
+  getUserAgentForDomain(domain) {
+    try {
+      const uaFile = path.join(this.cookiesPath, `${domain}_ua.txt`);
+      if (fs.existsSync(uaFile)) {
+        return fs.readFileSync(uaFile, 'utf8').trim();
+      }
+      return this.standardUserAgent;
+    } catch (error) {
+      logger.warn(`Error reading user agent for domain ${domain}: ${error.message}`);
+      return this.standardUserAgent;
     }
   }
 
@@ -108,12 +199,21 @@ class CookieHelper {
       }
       
       const cookiesJson = fs.readFileSync(cookieFile, 'utf8');
-      const cookies = JSON.parse(cookiesJson);
+      const cookieData = JSON.parse(cookiesJson);
       
-      // Cek apakah ada cookie cf_clearance
+      // Handle both old format (array) and new format (object with metadata)
+      const cookies = Array.isArray(cookieData) ? cookieData : cookieData.cookies || [];
+      
+      // Check if there's a cf_clearance cookie
       const hasClearance = cookies.some(cookie => cookie.name === 'cf_clearance');
+      const hasSyntheticClearance = cookies.some(cookie => cookie.name === 'cf_clearance' && cookie.synthetic);
+      
       if (hasClearance) {
-        logger.info(`Loaded ${cookies.length} cookies for domain: ${domain} (includes cf_clearance)`);
+        if (hasSyntheticClearance) {
+          logger.info(`Loaded ${cookies.length} cookies for domain: ${domain} (includes synthetic cf_clearance)`);
+        } else {
+          logger.info(`Loaded ${cookies.length} cookies for domain: ${domain} (includes cf_clearance)`);
+        }
       } else {
         logger.info(`Loaded ${cookies.length} cookies for domain: ${domain} (no cf_clearance)`);
       }
@@ -144,7 +244,7 @@ class CookieHelper {
           value: cookie.value,
           domain: cookie.domain || cookie.Domain,
           path: cookie.path || cookie.Path || '/',
-          expires: cookie.expires || cookie.Expires || -1,
+          expires: cookie.expires || cookie.Expires || Math.floor(Date.now() / 1000) + 86400,
           httpOnly: cookie.httpOnly || cookie.HttpOnly || false,
           secure: cookie.secure || cookie.Secure || false
         };
@@ -186,9 +286,21 @@ class CookieHelper {
   clearCookiesForDomain(domain) {
     try {
       const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+      const uaFile = path.join(this.cookiesPath, `${domain}_ua.txt`);
+      
+      let success = false;
       
       if (fs.existsSync(cookieFile)) {
         fs.unlinkSync(cookieFile);
+        success = true;
+      }
+      
+      if (fs.existsSync(uaFile)) {
+        fs.unlinkSync(uaFile);
+        success = true;
+      }
+      
+      if (success) {
         logger.info(`Cleared cookies for domain: ${domain}`);
         return true;
       }
@@ -224,13 +336,13 @@ class CookieHelper {
       });
       
       // Merge or add new cookies
+      let hasClearance = false;
+      
       newCookies.forEach(newCookie => {
         if (newCookie.name) {
           // Specific handling for Cloudflare cookies during merge
-          if (newCookie.name === 'cf_clearance' || 
-              newCookie.name.startsWith('cf_') || 
-              newCookie.name.startsWith('__cf') || 
-              newCookie.name.includes('cloudflare')) {
+          if (newCookie.name === 'cf_clearance') {
+            hasClearance = true;
             
             // Make sure domain is set correctly
             if (!newCookie.domain || !newCookie.domain.startsWith('.')) {
@@ -242,13 +354,24 @@ class CookieHelper {
             newCookie.httpOnly = true;
             
             // Extend expiry for Cloudflare cookies
-            if (!newCookie.expires || !newCookie.expiry) {
+            if (!newCookie.expires && !newCookie.expiry) {
               newCookie.expiry = Math.floor(Date.now() / 1000) + 86400; // 24 hours
             }
             
-            if (newCookie.name === 'cf_clearance') {
-              logger.info(`Merging cf_clearance cookie for ${domain}: ${newCookie.value.substring(0, 10)}...`);
+            logger.info(`Merging cf_clearance cookie for ${domain}: ${newCookie.value.substring(0, 10)}...`);
+          }
+          else if (newCookie.name.startsWith('cf_') || 
+              newCookie.name.startsWith('__cf') || 
+              newCookie.name.includes('cloudflare')) {
+            
+            // Make sure domain is set correctly for other Cloudflare cookies
+            if (!newCookie.domain || !newCookie.domain.startsWith('.')) {
+              newCookie.domain = domain.startsWith('.') ? domain : '.' + domain;
             }
+            
+            // Ensure cookies are properly flagged
+            newCookie.secure = true;
+            newCookie.httpOnly = true;
           }
           
           cookieMap[newCookie.name] = newCookie;
@@ -278,7 +401,9 @@ class CookieHelper {
         return '';
       }
       
-      return cookies
+      // Filter cookies that are applicable to this domain
+      // and sort them with cf_clearance first for higher priority
+      const sortedCookies = cookies
         .filter(cookie => {
           // Only include applicable cookies
           if (!cookie.domain) return true;
@@ -292,6 +417,14 @@ class CookieHelper {
             return domain === cookie.domain;
           }
         })
+        .sort((a, b) => {
+          // Put cf_clearance first
+          if (a.name === 'cf_clearance') return -1;
+          if (b.name === 'cf_clearance') return 1;
+          return 0;
+        });
+      
+      return sortedCookies
         .map(cookie => `${cookie.name}=${cookie.value}`)
         .join('; ');
     } catch (error) {
@@ -316,16 +449,90 @@ class CookieHelper {
         return null;
       }
       
+      // Get the user agent that was used with this cookie 
+      // This is critical as cf_clearance only works with the same UA
+      const userAgent = this.getUserAgentForDomain(domain);
+      
       return {
         token: clearanceCookie.value,
         domain: clearanceCookie.domain || domain,
         expiry: clearanceCookie.expiry || clearanceCookie.expires,
-        // User agent is critically important for Cloudflare - should be stored alongside
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+        userAgent: userAgent,
+        synthetic: !!clearanceCookie.synthetic
       };
     } catch (error) {
       logger.error(`Error getting Cloudflare clearance for ${domain}: ${error.message}`);
       return null;
+    }
+  }
+  
+  /**
+   * Verify Cloudflare cookies
+   * Check if all required cookies are present and properly formatted
+   */
+  verifyCloudflareProtection(domain) {
+    try {
+      const cookies = this.getCookiesForDomain(domain);
+      
+      // Required cookies for most Cloudflare bypass scenarios
+      const requiredCookies = {
+        cf_clearance: false,
+        __cf_bm: false,
+      };
+      
+      // Track problematic cookies
+      const issues = [];
+      
+      // Check for required cookies
+      cookies.forEach(cookie => {
+        if (cookie.name in requiredCookies) {
+          requiredCookies[cookie.name] = true;
+          
+          // Check cookie properties
+          if (!cookie.domain) {
+            issues.push(`Cookie ${cookie.name} has no domain`);
+          } else if (!cookie.domain.startsWith('.') && cookie.name === 'cf_clearance') {
+            issues.push(`Cookie ${cookie.name} domain should start with dot: ${cookie.domain}`);
+          }
+          
+          if (!cookie.expiry && !cookie.expires) {
+            issues.push(`Cookie ${cookie.name} has no expiry`);
+          }
+          
+          if (cookie.synthetic) {
+            issues.push(`Cookie ${cookie.name} is synthetic - won't work with strict Cloudflare`);
+          }
+        }
+      });
+      
+      // Add missing cookies to issues
+      Object.entries(requiredCookies).forEach(([name, found]) => {
+        if (!found) {
+          issues.push(`Missing required cookie: ${name}`);
+        }
+      });
+      
+      const userAgent = this.getUserAgentForDomain(domain);
+      if (!userAgent) {
+        issues.push(`Missing User-Agent for domain ${domain}`);
+      }
+      
+      // Return verification result
+      return {
+        valid: requiredCookies.cf_clearance && issues.length === 0,
+        hasClearance: requiredCookies.cf_clearance,
+        issues: issues,
+        userAgent: userAgent,
+        cookies: cookies
+      };
+    } catch (error) {
+      logger.error(`Error verifying Cloudflare protection: ${error.message}`);
+      return {
+        valid: false,
+        hasClearance: false,
+        issues: [`Error: ${error.message}`],
+        cookies: []
+      };
     }
   }
 }

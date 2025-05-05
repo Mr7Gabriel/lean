@@ -4,3 +4,5 @@ node_modules/**
 data/manga_mirror.db
 logs/**
 temp/** 
+chrome-data/** 
+data/cookies/**

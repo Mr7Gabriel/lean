@@ -7,6 +7,8 @@ const logger = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 const browserService = require('./services/browserService');
 const cookieRoutes = require('./routes/cookie.routes');
+const cloudflareHelper = require('./utils/CloudflareVerificationHelper');
+
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -44,6 +46,86 @@ app.get('/verify', (req, res) => {
 // Route for Cookies
 app.get('/cookies', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/cookie-manager.html'));
+});
+
+// Memeriksa status Cloudflare
+app.get('/api/cloudflare/status/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const status = await cloudflareHelper.getCloudflareStatus(domain);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/cloudflare/fix/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const result = await cloudflareHelper.fixCloudflareCookies(domain);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+      error: error.stack
+    });
+  }
+});
+
+// Endpoint untuk memverifikasi status Cloudflare untuk domain tertentu
+app.get('/api/cloudflare/status/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const status = await cloudflareHelper.getCloudflareStatus(domain);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+// Endpoint untuk membersihkan cookie Cloudflare
+app.delete('/api/cloudflare/cookies/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const result = cookieHelper.clearCookiesForDomain(domain);
+    res.json({
+      status: 'success',
+      message: result ? `Cookies for ${domain} cleared successfully` : `No cookies found for ${domain}`,
+      domain: domain
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+// Endpoint untuk mengambil cookie Cloudflare
+app.get('/api/cloudflare/cookies/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const cookies = cookieHelper.getCookiesForDomain(domain);
+    const userAgent = cookieHelper.getUserAgentForDomain(domain);
+    
+    res.json({
+      status: 'success',
+      domain: domain,
+      cookies: cookies,
+      userAgent: userAgent,
+      hasClearance: cookies.some(c => c.name === 'cf_clearance'),
+      cookieCount: cookies.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
 });
 
 // Root route
