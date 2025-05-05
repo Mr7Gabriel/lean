@@ -1,39 +1,35 @@
+const { Builder, By, until } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
+const UserAgent = require('user-agents');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
-const { execSync, spawn } = require('child_process');
-const undetected = require('undetected-chromedriver');
-const { By, until } = require('selenium-webdriver');
-const logger = require('../utils/logger');
 const config = require('../config');
+const logger = require('../utils/logger');
+const crypto = require('crypto');
+const { execSync } = require('child_process');
+const axios = require('axios');
 
 class BrowserService {
   constructor() {
     // Drivers storage
     this.drivers = {};
     
-    // Consistent User-Agent
+    // Set consistent User-Agent for requests
     this.stealthUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36';
     
-    // Paths
+    // Paths - use Windows-compatible paths
     this.downloadPath = path.join(process.cwd(), 'downloads');
     this.cookiesPath = path.join(process.cwd(), 'data', 'cookies');
+    this.tempDir = path.join(process.cwd(), 'temp');
     
     // Active verification sessions
     this.activeSessions = {};
-    
-    // Xvfb process and flag
-    this.xvfbProcess = null;
-    this.hasXvfb = false;
     
     // Create necessary directories
     this._createDirectories();
     
     // Kill hanging Chrome processes
     this._killChrome();
-    
-    // Start virtual display
-    this._startXvfb();
   }
 
   /**
@@ -41,90 +37,29 @@ class BrowserService {
    * @private
    */
   _createDirectories() {
-    const directories = [this.downloadPath, this.cookiesPath];
+    const directories = [this.downloadPath, this.cookiesPath, this.tempDir];
     
     directories.forEach(dir => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     });
+    
+    logger.info('Created necessary directories');
   }
 
   /**
-   * Start Xvfb virtual display server
-   * @private
-   */
-  _startXvfb() {
-    try {
-      // Check for xvfb-run
-      try {
-        execSync('which xvfb-run', { stdio: 'ignore' });
-        logger.info('Found xvfb-run for virtual display');
-        this.hasXvfb = true;
-      } catch (e) {
-        logger.warn('xvfb-run not found. Virtual display might not work properly.');
-        
-        // Attempt installation
-        try {
-          logger.info('Attempting to install xvfb...');
-          execSync('apt-get update && apt-get install -y xvfb', { stdio: 'inherit' });
-          this.hasXvfb = true;
-          logger.info('Successfully installed xvfb');
-        } catch (installError) {
-          logger.error(`Failed to install xvfb: ${installError.message}`);
-          this.hasXvfb = false;
-        }
-      }
-      
-      // Start Xvfb if available
-      if (this.hasXvfb) {
-        this.xvfbProcess = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24', '-ac'], {
-          stdio: 'ignore',
-          detached: true
-        });
-        
-        // Set display environment
-        process.env.DISPLAY = ':99';
-        
-        logger.info('Started Xvfb virtual display server on :99');
-      }
-    } catch (error) {
-      logger.error(`Error starting Xvfb: ${error.message}`);
-    }
-  }
-
-  /**
-   * Kill hanging Chrome processes
+   * Kill hanging Chrome processes on Windows
    * @private
    */
   _killChrome() {
-    const platforms = {
-      linux: [
-        'pkill -f chrome',
-        'pkill -f chromedriver'
-      ],
-      win32: [
-        'taskkill /F /IM chrome.exe /T',
-        'taskkill /F /IM chromedriver.exe /T'
-      ],
-      darwin: [
-        'pkill -f "Google Chrome"',
-        'pkill -f chromedriver'
-      ]
-    };
-
     try {
-      const platformCommands = platforms[process.platform] || [];
-      platformCommands.forEach(cmd => {
-        try {
-          execSync(cmd, { stdio: 'ignore' });
-        } catch (cmdError) {
-          // Ignore errors if no processes found
-        }
-      });
-      
+      // Windows command to kill Chrome processes
+      execSync('taskkill /F /IM chrome.exe /T', { stdio: 'ignore' });
+      execSync('taskkill /F /IM chromedriver.exe /T', { stdio: 'ignore' });
       logger.info('Killed hanging Chrome processes');
     } catch (error) {
+      // Ignore error if no processes were found
       logger.info('No hanging Chrome processes found');
     }
   }
@@ -329,7 +264,7 @@ class BrowserService {
   }
 
   /**
-   * Initialize undetected Chrome driver
+   * Initialize WebDriver
    * @param {string} instanceId - Unique driver instance ID
    * @param {boolean} headless - Run in headless mode
    * @returns {Promise<WebDriver>} Selenium WebDriver
@@ -341,35 +276,43 @@ class BrowserService {
     }
 
     try {
-      // Set up undetected chromedriver options
-      const options = new undetected.Options();
+      // Random user agent
+      const userAgent = new UserAgent({ deviceCategory: 'desktop' }).toString();
       
-      // Common Chrome arguments
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
+      
+      // Common Chrome arguments for Windows
       const commonArgs = [
         '--no-sandbox',
         '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-gpu-sandbox',
+        '--disable-accelerated-2d-canvas',
+        '--disable-accelerated-video-decode',
+        '--window-size=1920,1080',
+        `--user-agent=${userAgent}`,
+        '--disable-extensions',
         '--disable-web-security',
         '--ignore-certificate-errors',
         '--allow-running-insecure-content',
-        '--window-size=1920,1080',
-        `--user-agent=${this.stealthUserAgent}`
+        '--disable-application-cache',
+        '--disable-infobars'
       ];
       
       options.addArguments(commonArgs);
       
-      // Add headless mode if needed
-      if (headless) {
-        // Some versions of undetected-chromedriver support this
-        try {
-          options.headless();
-        } catch (e) {
-          options.addArguments('--headless=new');
-        }
+      // Use a Windows-friendly temp directory
+      const tempDir = path.join(this.tempDir, `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
       }
-      
-      // Unique temp directory
-      const tempDir = path.join('/tmp', `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
-      fs.mkdirSync(tempDir, { recursive: true });
       options.addArguments(`--user-data-dir=${tempDir}`);
       
       // Download preferences
@@ -385,10 +328,130 @@ class BrowserService {
         options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
       }
       
-      // Build undetected WebDriver
-      const driver = await undetected.Builder()
-        .setChromeOptions(options)
-        .build();
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
+      
+      // Store driver info
+      this.drivers[instanceId] = {
+        driver,
+        tempDir
+      };
+      
+      // Set timeouts
+      await driver.manage().setTimeouts({
+        implicit: 10000,
+        pageLoad: 30000,
+        script: 30000
+      });
+      
+      logger.info(`WebDriver initialized: ${instanceId}`);
+      return driver;
+    } catch (error) {
+      delete this.drivers[instanceId];
+      logger.error(`WebDriver init error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize a reinforced WebDriver that's more resistant to detection
+   * @param {string} instanceId - Unique driver instance ID
+   * @param {boolean} headless - Run in headless mode
+   * @returns {Promise<WebDriver>} Selenium WebDriver
+   */
+  async initReinforcedDriver(instanceId = 'default', headless = true) {
+    // Close existing driver if it exists
+    if (this.drivers[instanceId]) {
+      await this.closeDriver(instanceId);
+    }
+
+    try {
+      // Chrome options
+      const options = new chrome.Options();
+      
+      // Headless configuration
+      if (headless) {
+        options.addArguments('--headless=new');
+      }
+      
+      // Stealth arguments to avoid detection
+      const stealthArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-site-isolation-trials',
+        '--disable-features=BlockInsecurePrivateNetworkRequests',
+        '--disable-web-security',
+        '--allow-running-insecure-content',
+        `--user-agent=${this.stealthUserAgent}`,
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-gpu-sandbox',
+        '--disable-accelerated-2d-canvas',
+        '--disable-accelerated-video-decode',
+        '--disable-setuid-sandbox',
+        '--ignore-certificate-errors',
+        '--enable-features=NetworkServiceInProcess2',
+        '--disable-features=PrivacySandboxAdsAPIs',
+        '--window-size=1920,1080'
+      ];
+      
+      options.addArguments(stealthArgs);
+      
+      // Additional preferences to avoid detection
+      options.setUserPreferences({
+        'profile.default_content_setting_values.notifications': 2,
+        'profile.default_content_settings.popups': 0,
+        'download.prompt_for_download': false,
+        'download.default_directory': this.downloadPath,
+        'plugins.always_open_pdf_externally': true,
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false
+      });
+      
+      // Use a Windows-friendly temp directory
+      const tempDir = path.join(this.tempDir, `chrome-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      options.addArguments(`--user-data-dir=${tempDir}`);
+      
+      // Custom Chrome binary path if provided
+      if (config.selenium.chromeBinaryPath) {
+        options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
+      }
+      
+      // ChromeDriver service
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      // Build WebDriver
+      const builder = new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options);
+      
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const driver = await builder.build();
       
       // Store driver info
       this.drivers[instanceId] = {
@@ -403,7 +466,59 @@ class BrowserService {
         script: 45000
       });
       
-      logger.info(`Undetected WebDriver initialized: ${instanceId}`);
+      // Add anti-detection scripts
+      try {
+        await driver.executeScript(`
+          // Overwrite navigator properties
+          Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+          });
+          
+          // Handle notification permissions
+          const originalQuery = window.navigator.permissions ? window.navigator.permissions.query : null;
+          if (originalQuery) {
+            window.navigator.permissions.query = (parameters) => (
+              parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+          }
+          
+          // Remove automation flags
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+          
+          // Add plugins data
+          Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+              return [{
+                0: {type: "application/pdf"},
+                description: "Portable Document Format",
+                filename: "internal-pdf-viewer",
+                length: 1,
+                name: "Chrome PDF Plugin"
+              }];
+            }
+          });
+          
+          // Add languages
+          Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en', 'id']
+          });
+          
+          // Override plugin detection
+          const prototypeObj = {};
+          prototypeObj.toString = function toString() {
+            return "[object PluginArray]";
+          };
+          Object.setPrototypeOf(navigator.plugins, prototypeObj);
+        `);
+      } catch (scriptError) {
+        logger.warn(`Anti-detection script error: ${scriptError.message}`);
+      }
+      
+      logger.info(`Reinforced WebDriver initialized: ${instanceId}`);
       return driver;
     } catch (error) {
       delete this.drivers[instanceId];
@@ -424,12 +539,40 @@ class BrowserService {
         
         // Clean temp directory
         if (driverInfo.tempDir && fs.existsSync(driverInfo.tempDir)) {
-          fs.rmSync(driverInfo.tempDir, { recursive: true, force: true });
+          this._removeDirectory(driverInfo.tempDir);
         }
       } catch (error) {
         logger.error(`Driver close error: ${error.message}`);
       } finally {
         delete this.drivers[instanceId];
+      }
+    }
+  }
+  
+  /**
+   * Utility to recursively remove directory on Windows
+   * @private
+   */
+  _removeDirectory(dirPath) {
+    if (fs.existsSync(dirPath)) {
+      fs.readdirSync(dirPath).forEach((file) => {
+        const curPath = path.join(dirPath, file);
+        if (fs.lstatSync(curPath).isDirectory()) {
+          // Recursive call for directories
+          this._removeDirectory(curPath);
+        } else {
+          // Delete file
+          try {
+            fs.unlinkSync(curPath);
+          } catch (e) {
+            logger.warn(`Failed to delete file ${curPath}: ${e.message}`);
+          }
+        }
+      });
+      try {
+        fs.rmdirSync(dirPath);
+      } catch (e) {
+        logger.warn(`Failed to remove directory ${dirPath}: ${e.message}`);
       }
     }
   }
@@ -457,23 +600,71 @@ class BrowserService {
     
     try {
       const domain = this._extractDomain(url);
-      const driver = await this.initDriver(requestId, true);
       
-      // Load saved cookies if available
+      // Try using axios first (no browser)
+      try {
+        logger.info(`Attempting to fetch ${url} with direct HTTP request`);
+        
+        // Get cookies for this domain if available
+        const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+        let cookieHeader = '';
+        
+        if (fs.existsSync(cookieFile)) {
+          const cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
+          cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        }
+        
+        // Make request
+        const response = await axios.get(url, {
+          headers: {
+            'User-Agent': this.stealthUserAgent,
+            'Cookie': cookieHeader,
+            'Accept': 'text/html,application/xhtml+xml,application/xml',
+            'Accept-Language': 'en-US,en;q=0.9'
+          },
+          timeout: 30000
+        });
+        
+        // If we got HTML and not a tiny response, return it
+        if (response.status === 200 && 
+            response.data && 
+            response.data.length > 5000 &&
+            !response.data.includes('Cloudflare') &&
+            !response.data.includes('captcha')) {
+          
+          logger.info(`Successfully fetched ${url} with direct HTTP request`);
+          return response.data;
+        }
+        
+        logger.info('Direct HTTP request got blocked or returned incomplete data, falling back to browser');
+      } catch (axiosError) {
+        logger.info(`Axios request failed: ${axiosError.message}, falling back to browser`);
+      }
+      
+      // Initialize browser with reinforced settings
+      const driver = await this.initReinforcedDriver(requestId, true);
+      
+      // Load saved cookies
       await this._loadCookiesForDomain(domain, requestId);
       
-      logger.info(`Loading URL with undetected-chromedriver: ${url}`);
+      // Navigate to URL
+      logger.info(`Loading URL: ${url}`);
       await driver.get(url);
       
-      // Wait for body to be present
+      // Wait for body to load
       await driver.wait(until.elementLocated(By.tagName('body')), 30000);
-      
-      // Allow scripts to run and page to fully load
-      await driver.sleep(3000);
       
       // Get page source and check for Cloudflare
       const pageSource = await driver.getPageSource();
       const currentUrl = await driver.getCurrentUrl();
+      
+      // Additional wait for Cloudflare redirect
+      if (currentUrl.includes('cloudflare') || 
+          pageSource.includes('Cloudflare') || 
+          pageSource.includes('challenge')) {
+        logger.info('Cloudflare page detected, waiting for possible redirect...');
+        await driver.sleep(5000);
+      }
       
       // Check for verification challenge
       if (
@@ -530,7 +721,50 @@ class BrowserService {
     const downloadId = `download_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     
     try {
-      const driver = await this.initDriver(downloadId, true);
+      // Try direct download first
+      try {
+        logger.info(`Attempting to download image directly: ${imageUrl}`);
+        
+        const domain = this._extractDomain(imageUrl);
+        
+        // Get cookies for this domain if available
+        const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+        let cookieHeader = '';
+        
+        if (fs.existsSync(cookieFile)) {
+          const cookies = JSON.parse(fs.readFileSync(cookieFile, 'utf8'));
+          cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+        }
+        
+        // Make request
+        const response = await axios.get(imageUrl, {
+          headers: {
+            'User-Agent': this.stealthUserAgent,
+            'Cookie': cookieHeader,
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': `https://${domain}/`
+          },
+          responseType: 'arraybuffer',
+          timeout: 30000
+        });
+        
+        // Check if it's an image
+        const contentType = response.headers['content-type'] || '';
+        if (response.status === 200 && contentType.startsWith('image/')) {
+          // Save to file
+          fs.writeFileSync(outputPath, Buffer.from(response.data));
+          logger.info(`Image downloaded directly: ${outputPath}`);
+          return outputPath;
+        }
+        
+        logger.info('Direct image download failed, falling back to browser');
+      } catch (axiosError) {
+        logger.info(`Axios image download failed: ${axiosError.message}, falling back to browser`);
+      }
+      
+      // Fall back to browser download
+      const driver = await this.initReinforcedDriver(downloadId, true);
       
       // Extract domain to load cookies
       const domain = this._extractDomain(imageUrl);
@@ -563,36 +797,51 @@ class BrowserService {
    */
   async launchVerificationSession(url) {
     try {
-      // Make sure we have Xvfb running
-      if (!this.hasXvfb) {
-        logger.error('Cannot launch verification session without Xvfb');
-        throw new Error('Xvfb is required for verification sessions');
-      }
-      
       // Generate a session ID
       const sessionId = this._generateSessionId();
       
       // Create unique temp directory
-      const tempDir = path.join('/tmp', `chrome-verify-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
-      fs.mkdirSync(tempDir, { recursive: true });
+      const tempDir = path.join(this.tempDir, `chrome-verify-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`);
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
       
-      // Set up options
-      const options = new undetected.Options();
+      // Create visible browser instance (non-headless)
+      const options = new chrome.Options();
       options.addArguments('--no-sandbox');
       options.addArguments('--disable-dev-shm-usage');
+      options.addArguments('--disable-gpu');
       options.addArguments('--window-size=1280,800');
       options.addArguments(`--user-data-dir=${tempDir}`);
       options.addArguments(`--user-agent=${this.stealthUserAgent}`);
       
-      // Custom Chrome binary path if provided
+      // Add stealth options for better Cloudflare bypass
+      options.addArguments('--disable-blink-features=AutomationControlled');
+      
+      // Set preferences for stealth
+      options.setUserPreferences({
+        'credentials_enable_service': false,
+        'profile.password_manager_enabled': false,
+        'profile.default_content_setting_values.notifications': 2
+      });
+      
+      // Set Chrome binary path if provided
       if (config.selenium.chromeBinaryPath) {
         options.setChromeBinaryPath(config.selenium.chromeBinaryPath);
       }
       
-      // Create a new driver instance for verification (non-headless)
-      const verifyDriver = await undetected.Builder()
-        .setChromeOptions(options)
-        .build();
+      // Create a new driver instance for verification
+      let service = null;
+      if (config.selenium.chromeDriverPath) {
+        service = new chrome.ServiceBuilder(config.selenium.chromeDriverPath).build();
+      }
+      
+      const builder = new Builder().forBrowser('chrome').setChromeOptions(options);
+      if (service) {
+        builder.setChromeService(service);
+      }
+      
+      const verifyDriver = await builder.build();
       
       // Set timeouts
       await verifyDriver.manage().setTimeouts({
@@ -601,8 +850,65 @@ class BrowserService {
         script: 30000
       });
       
+      // Apply stealth scripts
+      try {
+        await verifyDriver.executeScript(`
+          Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+          });
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+        `);
+      } catch (scriptError) {
+        logger.warn(`Stealth script error: ${scriptError.message}`);
+      }
+      
       // Extract domain
       const domain = this._extractDomain(url);
+      
+      // Load existing cookies if available
+      try {
+        const cookieFile = path.join(this.cookiesPath, `${domain}.json`);
+        if (fs.existsSync(cookieFile)) {
+          // First navigate to the domain
+          await verifyDriver.get(`https://${domain}`);
+          await verifyDriver.sleep(1000);
+          
+          // Load cookies
+          const cookiesJson = fs.readFileSync(cookieFile, 'utf8');
+          const cookies = JSON.parse(cookiesJson);
+          
+          // Add cookies
+          for (const cookie of cookies) {
+            try {
+              const cleanCookie = {
+                name: cookie.name,
+                value: cookie.value,
+                domain: cookie.domain,
+                path: cookie.path || '/',
+                expiry: cookie.expiry || cookie.expires,
+                secure: cookie.secure,
+                httpOnly: cookie.httpOnly
+              };
+              
+              Object.keys(cleanCookie).forEach(key => {
+                if (cleanCookie[key] === undefined || cleanCookie[key] === null) {
+                  delete cleanCookie[key];
+                }
+              });
+              
+              await verifyDriver.manage().addCookie(cleanCookie);
+            } catch (cookieError) {
+              // Ignore cookie errors
+            }
+          }
+          
+          logger.info(`Loaded existing cookies for domain: ${domain}`);
+        }
+      } catch (cookieError) {
+        logger.warn(`Error loading cookies: ${cookieError.message}`);
+      }
       
       // Navigate to the URL
       await verifyDriver.get(url);
@@ -950,7 +1256,7 @@ class BrowserService {
       // Clean up temp directory
       if (session.tempDir && fs.existsSync(session.tempDir)) {
         try {
-          fs.rmSync(session.tempDir, { recursive: true, force: true });
+          this._removeDirectory(session.tempDir);
         } catch (cleanupError) {
           logger.warn(`Could not clean up temp directory: ${cleanupError.message}`);
         }
@@ -1044,21 +1350,13 @@ class BrowserService {
   }
 
   /**
-   * Cleanup method to stop Xvfb and other resources
+   * Cleanup method to stop resources
    */
   cleanup() {
     // Close all drivers
     this.closeAllDrivers();
     
-    // Kill Xvfb process if it exists
-    if (this.xvfbProcess) {
-      try {
-        process.kill(-this.xvfbProcess.pid);
-        logger.info('Stopped Xvfb process');
-      } catch (error) {
-        logger.warn(`Error stopping Xvfb: ${error.message}`);
-      }
-    }
+    logger.info('Browser service cleanup completed');
   }
 }
 

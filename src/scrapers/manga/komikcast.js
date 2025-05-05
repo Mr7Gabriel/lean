@@ -93,14 +93,14 @@ class KomikcastScraper extends BaseScraper {
           html = await this._getWithSelenium(url);
         }
       } catch (error) {
-        logger.warning(`Standard request failed, switching to Selenium: ${error.message}`);
+        logger.warn(`Standard request failed, switching to Selenium: ${error.message}`);
         html = await this._getWithSelenium(url);
       }
       
       // Parse HTML with Cheerio (equivalent to BeautifulSoup)
       const $ = cheerio.load(html);
       
-      // Initialize data object
+      // Initialize data object - FROM KOMIKCAST.JS
       const data = {};
 
       // Extract title
@@ -182,6 +182,124 @@ class KomikcastScraper extends BaseScraper {
   }
 
   /**
+   * Scrape chapter data from URL (adapted from kiryuu.js)
+   * @param {string} url - URL of chapter page
+   * @returns {Promise<object|null>} Dictionary of chapter data or null on error
+   */
+  async scrapeChapter(url) {
+    try {
+      // First try with normal request
+      let html = '';
+      try {
+        const response = await this.scraper.get(url);
+        html = response.data;
+        
+        // Check if we need to bypass anti-bot protection
+        if (
+          html.length < 5000 || 
+          html.toLowerCase().includes('captcha') || 
+          html.toLowerCase().includes('cloudflare')
+        ) {
+          logger.info("Detected anti-bot protection, switching to Selenium");
+          html = await this._getWithSelenium(url);
+        }
+      } catch (error) {
+        logger.warn(`Standard request failed, switching to Selenium: ${error.message}`);
+        html = await this._getWithSelenium(url);
+      }
+      
+      // Parse HTML with Cheerio
+      const $ = cheerio.load(html);
+      
+      // Initialize data object
+      const data = {
+        title: '',
+        chapter: '',
+        manga_title: '',
+        images: []
+      };
+      
+      // Extract chapter title and number
+      const titleElem = $('h1.entry-title');
+      if (titleElem.length) {
+        data.title = titleElem.text().trim();
+        
+        // Extract chapter number from title
+        const chapterMatch = data.title.match(/Chapter\s+(\d+(?:\.\d+)?)/);
+        if (chapterMatch) {
+          data.chapter = chapterMatch[1];
+        }
+      }
+      
+      // Extract manga title - using komikcast specific selectors
+      const mangaLink = $('div.chapter-headpost a');
+      if (mangaLink.length) {
+        data.manga_title = mangaLink.text().trim();
+      }
+      
+      // Extract chapter images
+      const imageContainer = $('#readerarea');
+      if (imageContainer.length) {
+        imageContainer.find('img').each((i, elem) => {
+          // Get image URL from src, data-src, or data-lazy-src attributes
+          const imgUrl = $(elem).attr('src') || $(elem).attr('data-src') || $(elem).attr('data-lazy-src');
+          if (imgUrl && !imgUrl.includes('komikcast') && !imgUrl.includes('logo')) {
+            data.images.push(imgUrl);
+          }
+        });
+      }
+      
+      // If no images found, try alternative method (for lazy-loaded images)
+      if (data.images.length === 0) {
+        $('div#readerareaimg p img').each((i, elem) => {
+          const imgUrl = $(elem).attr('src') || $(elem).attr('data-src') || $(elem).attr('data-lazy-src');
+          if (imgUrl) {
+            data.images.push(imgUrl);
+          }
+        });
+      }
+      
+      // If still no images found, look for js array
+      if (data.images.length === 0) {
+        const scriptContent = $('script:contains("ts_reader")').html();
+        if (scriptContent) {
+          const imageArrayMatch = scriptContent.match(/images\s*=\s*(\[.*?\])/s);
+          if (imageArrayMatch) {
+            try {
+              const imagesJson = imageArrayMatch[1].replace(/'/g, '"');
+              const images = JSON.parse(imagesJson);
+              data.images = images;
+            } catch (e) {
+              logger.warn(`Failed to parse images array: ${e.message}`);
+            }
+          }
+        }
+      }
+      
+      // If no chapter number was found, try to extract from URL
+      if (!data.chapter) {
+        const chapterMatch = url.match(/chapter-(\d+(?:-\d+)?)/);
+        if (chapterMatch) {
+          // Convert from URL format (e.g., chapter-10-5 to 10.5)
+          const chNum = chapterMatch[1].replace('-', '.');
+          data.chapter = chNum;
+          if (!data.title) {
+            data.title = `Chapter ${chNum}`;
+          }
+        }
+      }
+      
+      return data;
+    } catch (error) {
+      logger.error(`Error scraping chapter ${url}: ${error.message}`);
+      if (error.stack) {
+        logger.error(error.stack);
+      }
+      return null;
+    }
+  }
+
+  /**
    * Download manga cover image
    * @param {string} url - URL of manga page
    * @param {string|null} mangaTitle - Optional manga title for filename
@@ -194,7 +312,7 @@ class KomikcastScraper extends BaseScraper {
       const mangaDetails = await this.scrape(url);
       
       if (!mangaDetails || !mangaDetails.coverImage) {
-        logger.warning("Cover URL not found");
+        logger.warn("Cover URL not found");
         return null;
       }
       
@@ -239,7 +357,7 @@ class KomikcastScraper extends BaseScraper {
         // Save image
         fs.writeFileSync(outputFilename, response.data);
       } catch (error) {
-        logger.warning(`Failed to download cover with axios: ${error.message}`);
+        logger.warn(`Failed to download cover with axios: ${error.message}`);
         
         // Try with Selenium as a fallback
         await browserService.downloadImage(coverUrl, outputFilename);
